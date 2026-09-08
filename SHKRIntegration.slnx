@@ -1,0 +1,4 @@
+<Solution>
+  <Project Path="SHKRIntegration.csproj" />
+  <Project Path="..\SHKRIntegration.Tests\SHKRIntegration.Tests.csproj" />
+</Solution>
