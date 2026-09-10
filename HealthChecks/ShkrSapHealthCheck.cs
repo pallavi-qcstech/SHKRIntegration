@@ -8,12 +8,6 @@ using SHKRIntegration.Options;
 namespace SHKRIntegration.HealthChecks;
 
 
-/// Confirms the SAP OData Gateway itself is reachable - a lightweight GET against
-/// Z_VEND_DETAILS_SRV's $metadata (no business data returned, and GET needs no CSRF token),
-/// not a full Vendor fetch. Uses its own plain HttpClient (IHttpClientFactory.CreateClient(),
-/// not the typed ShkrSap client), deliberately, so this probe isn't subject to the typed client's
-/// retry/circuit-breaker pipeline - a health check should fail fast, not spend several seconds
-/// retrying.
 
 public sealed class ShkrSapHealthCheck(IHttpClientFactory httpClientFactory, IOptions<ShkrSapApiOptions> shkrSapOptions) : IHealthCheck
 {

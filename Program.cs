@@ -17,9 +17,6 @@ app.UseExceptionHandler();
 
 app.UseHttpsRedirection();
 
-// No controllers, no auth: this project's only job is the daily ShkrVendorService
-// (see Services/ShkrVendorService.cs) - there is no HTTP-triggerable sync endpoint,
-// so there is nothing here for JWT auth or MVC routing to protect.
 app.MapHealthChecks("/health");
 
 app.Run();

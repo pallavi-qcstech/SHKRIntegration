@@ -6,9 +6,6 @@ using SHKRIntegration.Options;
 namespace SHKRIntegration.HealthChecks;
 
 
-/// Confirms the PMWeb SQL Server database is reachable - opens and immediately closes a
-/// connection, no query executed. Uses ShkrDatabaseOptions.ConnectionString - the shared
-/// connection string used by every SQL consumer in this project (Vendor, Project, this check).
 
 public sealed class SqlServerHealthCheck(IOptions<ShkrDatabaseOptions> databaseOptions) : IHealthCheck
 {
