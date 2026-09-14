@@ -354,3 +354,5 @@ $RECYCLE.BIN/
 *.lnk
 
 *.swp
+
+appsettings.Production.json
