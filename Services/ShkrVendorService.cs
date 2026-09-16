@@ -46,9 +46,8 @@ public sealed class ShkrVendorService(
             {
                 logger.LogInformation("Daily vendor staging sync starting.");
 
-                var endDate = DateTime.UtcNow.Date;
-                var startDate = endDate.AddDays(-1);
-                const string SapDateFormat = "yyyyMMdd";
+                var lastRunEndDateUtc = await GetLastRunEndDateAsync(stoppingToken);
+                var (startDate, endDate) = ResolveSyncDateRange(_vendorOptions, DateTime.UtcNow, lastRunEndDateUtc);
 
                 var allVendors = await GetAllVendors(
                     startDate.ToString(SapDateFormat), endDate.ToString(SapDateFormat), stoppingToken);
@@ -83,6 +82,8 @@ public sealed class ShkrVendorService(
                     "Daily vendor staging sync completed: {Processed} processed, {Failed} failed.",
                     processed, errors.Count);
 
+                await InsertRunRecordAsync(startDate, endDate, stoppingToken);
+
                 await using (var storedProcedureConnection = new SqlConnection(_databaseOptions.ConnectionString))
                 {
                     await storedProcedureConnection.OpenAsync(stoppingToken);
@@ -95,6 +96,8 @@ public sealed class ShkrVendorService(
                     await promotionCommand.ExecuteNonQueryAsync(stoppingToken);
                     logger.LogInformation("SHKR_INT_AddVendors executed.");
                 }
+
+                await LogStaleStagingErrorsAsync(stoppingToken);
             }
             catch (OperationCanceledException)
             {
@@ -104,6 +107,92 @@ public sealed class ShkrVendorService(
                 logger.LogError(ex, "Daily vendor staging sync run failed.");
             }
         }
+    }
+
+    private const int StaleErrorThresholdDays = 7;
+    private const string SapDateFormat = "yyyyMMdd";
+
+    // Precedence: (1) the persisted watermark (last run's End_Date) as the new Start_Date, through
+    // today; (2) on a genuine first-ever run (no watermark row exists yet), options.InitialLookbackDays
+    // back from today.
+    public static (DateTime StartDate, DateTime EndDate) ResolveSyncDateRange(
+        ShkrVendorOptions options, DateTime utcNow, DateTime? lastRunEndDateUtc)
+    {
+        var endDate = utcNow.Date;
+        var startDate = lastRunEndDateUtc?.Date ?? endDate.AddDays(-options.InitialLookbackDays);
+
+        return (startDate, endDate);
+    }
+
+    // Reads the watermark left by the last run. Null means no run has ever completed successfully
+    // yet, so ResolveSyncDateRange falls back to InitialLookbackDays.
+    public async Task<DateTime?> GetLastRunEndDateAsync(CancellationToken cancellationToken = default)
+    {
+        const string sql = "SELECT TOP 1 RunEndDate FROM dbo.xx_vendor_sync_run_tbl_ib ORDER BY Id DESC";
+
+        await using var connection = new SqlConnection(_databaseOptions.ConnectionString);
+        await connection.OpenAsync(cancellationToken);
+        await using var command = new SqlCommand(sql, connection);
+
+        var result = await command.ExecuteScalarAsync(cancellationToken);
+        return result as DateTime?;
+    }
+
+    // Advances the watermark. Called unconditionally once the SAP fetch + per-vendor staging loop
+    // finish, regardless of individual vendor staging errors. A failed vendor stays retryable via
+    // its own staging row; the watermark only tracks whether this run's fetch+staging pass
+    // completed, not whether every vendor in it was promoted.
+    public async Task InsertRunRecordAsync(DateTime runStartDate, DateTime runEndDate, CancellationToken cancellationToken = default)
+    {
+        const string sql = """
+            INSERT INTO dbo.xx_vendor_sync_run_tbl_ib (RunStartDate, RunEndDate, CreatedDate)
+            VALUES (@RunStartDate, @RunEndDate, @CreatedDate)
+            """;
+
+        await using var connection = new SqlConnection(_databaseOptions.ConnectionString);
+        await connection.OpenAsync(cancellationToken);
+        await using var command = new SqlCommand(sql, connection);
+        command.Parameters.AddWithValue("@RunStartDate", runStartDate);
+        command.Parameters.AddWithValue("@RunEndDate", runEndDate);
+        command.Parameters.AddWithValue("@CreatedDate", DateTime.Now);
+
+        await command.ExecuteNonQueryAsync(cancellationToken);
+        logger.LogInformation("Vendor sync watermark advanced to {RunEndDate:yyyy-MM-dd}.", runEndDate);
+    }
+
+    // Promotion rejections (e.g. the open country-code issue) have no scheduled retry — a row only
+    // leaves ProcessStatus='E' if the same VendorID reappears in a future SAP fetch, or someone
+    // manually resets it. This just surfaces rows that have been stuck a while so they aren't forgotten.
+    public async Task<IReadOnlyList<long>> LogStaleStagingErrorsAsync(CancellationToken cancellationToken = default)
+    {
+        const string sql = """
+            SELECT VendorID FROM dbo.xx_vendor_stg_tbl_ib
+            WHERE ProcessStatus = 'E' AND LastUpdateDate <= @Threshold
+            """;
+
+        await using var connection = new SqlConnection(_databaseOptions.ConnectionString);
+        await connection.OpenAsync(cancellationToken);
+        await using var command = new SqlCommand(sql, connection);
+        command.Parameters.AddWithValue("@Threshold", DateTime.Now.AddDays(-StaleErrorThresholdDays));
+
+        var staleVendorIds = new List<long>();
+        await using (var reader = await command.ExecuteReaderAsync(cancellationToken))
+        {
+            while (await reader.ReadAsync(cancellationToken))
+            {
+                staleVendorIds.Add(reader.GetInt64(0));
+            }
+        }
+
+        if (staleVendorIds.Count > 0)
+        {
+            logger.LogWarning(
+                "{Count} vendor(s) have been stuck in ProcessStatus='E' in xx_vendor_stg_tbl_ib for " +
+                "{ThresholdDays}+ days: {VendorIds}",
+                staleVendorIds.Count, StaleErrorThresholdDays, string.Join(", ", staleVendorIds));
+        }
+
+        return staleVendorIds;
     }
 
     public async Task<VendorHeaderData> GetAllVendors(string startDate, string endDate, CancellationToken cancellationToken = default)
