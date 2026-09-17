@@ -112,9 +112,6 @@ public sealed class ShkrVendorService(
     private const int StaleErrorThresholdDays = 7;
     private const string SapDateFormat = "yyyyMMdd";
 
-    // Precedence: (1) the persisted watermark (last run's End_Date) as the new Start_Date, through
-    // today; (2) on a genuine first-ever run (no watermark row exists yet), options.InitialLookbackDays
-    // back from today.
     public static (DateTime StartDate, DateTime EndDate) ResolveSyncDateRange(
         ShkrVendorOptions options, DateTime utcNow, DateTime? lastRunEndDateUtc)
     {
@@ -124,8 +121,6 @@ public sealed class ShkrVendorService(
         return (startDate, endDate);
     }
 
-    // Reads the watermark left by the last run. Null means no run has ever completed successfully
-    // yet, so ResolveSyncDateRange falls back to InitialLookbackDays.
     public async Task<DateTime?> GetLastRunEndDateAsync(CancellationToken cancellationToken = default)
     {
         const string sql = "SELECT TOP 1 RunEndDate FROM dbo.xx_vendor_sync_run_tbl_ib ORDER BY Id DESC";
@@ -138,10 +133,6 @@ public sealed class ShkrVendorService(
         return result as DateTime?;
     }
 
-    // Advances the watermark. Called unconditionally once the SAP fetch + per-vendor staging loop
-    // finish, regardless of individual vendor staging errors. A failed vendor stays retryable via
-    // its own staging row; the watermark only tracks whether this run's fetch+staging pass
-    // completed, not whether every vendor in it was promoted.
     public async Task InsertRunRecordAsync(DateTime runStartDate, DateTime runEndDate, CancellationToken cancellationToken = default)
     {
         const string sql = """
@@ -160,9 +151,6 @@ public sealed class ShkrVendorService(
         logger.LogInformation("Vendor sync watermark advanced to {RunEndDate:yyyy-MM-dd}.", runEndDate);
     }
 
-    // Promotion rejections (e.g. the open country-code issue) have no scheduled retry — a row only
-    // leaves ProcessStatus='E' if the same VendorID reappears in a future SAP fetch, or someone
-    // manually resets it. This just surfaces rows that have been stuck a while so they aren't forgotten.
     public async Task<IReadOnlyList<long>> LogStaleStagingErrorsAsync(CancellationToken cancellationToken = default)
     {
         const string sql = """
@@ -208,9 +196,25 @@ public sealed class ShkrVendorService(
             {
                 new
                 {
-                    VendorAddressSet = new object[] { new { } },
-                    VendorContactSet = new object[] { new { } },
-                    VendorCompanySet = new object[] { new { } }
+                    VendorID = string.Empty,
+                    VendorCode = string.Empty,
+                    VendorName = string.Empty,
+                    VendorType = string.Empty,
+                    Country = string.Empty,
+                    City = string.Empty,
+                    POBox = string.Empty,
+                    PostalCode = string.Empty,
+                    AddressLine1 = string.Empty,
+                    AddressLine2 = string.Empty,
+                    Street = string.Empty,
+                    Telephone1 = string.Empty,
+                    Telephone2 = string.Empty,
+                    Fax = string.Empty,
+                    EmailAddress = string.Empty,
+                    ActiveFlag = string.Empty,
+                    VendorAddressSet = Array.Empty<object>(),
+                    VendorContactSet = Array.Empty<object>(),
+                    VendorCompanySet = Array.Empty<object>()
                 }
             }
         };
