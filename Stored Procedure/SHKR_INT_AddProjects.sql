@@ -20,18 +20,20 @@ BEGIN
     BEGIN TRY
 
         DECLARE
-            @ProjectProfile VARCHAR(250),
-            @Projectcode    VARCHAR(250),
-            @Projectname    VARCHAR(250),
-            @Startdate      DATETIME2,
-            @CreatedOn      DATETIME2,
-            @Companycode    VARCHAR(250),
-            @Id             BIGINT
+            @ProjectProfile VARCHAR(30),
+            @Projectcode    VARCHAR(150),
+            @Projectname    VARCHAR(150),
+            @Startdate      DATE,
+            @CreatedOn      DATE,
+            @Companycode    VARCHAR(30),
+            @Id             BIGINT,
+            @ProgramId      BIGINT,
+            @CommitmentCompanyId BIGINT
 
         DECLARE project_cursor CURSOR LOCAL FAST_FORWARD FOR
-            SELECT ProjectProfile, Projectcode, Projectname, Startdate, CreatedOn, Companycode
-            FROM dbo.xx_project_stg_tbl_ib
-            WHERE ProcessStatus = 'N'
+            SELECT project_profile, project_code, project_name, Start_Date, creation_date, company_code
+            FROM [PMWEB\roopal.chauhan].[xx_project_stg_tbl_ib]
+            WHERE process_status = 'N'
 
         OPEN project_cursor
         FETCH NEXT FROM project_cursor INTO
@@ -42,46 +44,51 @@ BEGIN
             SET @ErrorStatus = 0
             SET @ErrorDesc = ''
             SET @Id = NULL
+            SET @ProgramId = NULL
+            SET @CommitmentCompanyId = NULL
 
             IF EXISTS (SELECT 1 FROM dbo.Projects WHERE ProjectNumber = @Projectcode)
                 SELECT @ErrorStatus = 1, @ErrorDesc = 'Duplicate ProjectNumber - a project with this ProjectNumber already exists in dbo.Projects. '
 
+            -- ProjectProfile (SAP) is matched against dbo.Programs.ProgramCode
+            -- ProgramId has a FK constraint (FK_Projects_Programs), so for an
+            -- unresolved match - reject the row
+            
+            IF @ErrorStatus = 0
+            BEGIN
+                SET @ProgramId = (SELECT TOP 1 Id FROM dbo.Programs WHERE ProgramCode = @ProjectProfile)
+                IF @ProgramId IS NULL
+                    SELECT @ErrorStatus = 1, @ErrorDesc = @ErrorDesc + 'Invalid ProjectProfile - no matching ProgramCode in dbo.Programs. '
+            END
+
+            -- Companycode (SAP) is matched against dbo.Companies.CompanyCode and stored into
+            -- dbo.Projects.CommitmentCompanyId 
+            -- An unresolved match is rejected for consistency with ProgramId.
+            IF @ErrorStatus = 0
+            BEGIN
+                SET @CommitmentCompanyId = (SELECT TOP 1 Id FROM dbo.Companies WHERE CompanyCode = @Companycode)
+                IF @CommitmentCompanyId IS NULL
+                    SELECT @ErrorStatus = 1, @ErrorDesc = @ErrorDesc + 'Invalid Companycode - no matching CompanyCode in dbo.Companies. '
+            END
+
             IF @ErrorStatus = 0
             BEGIN
                 INSERT INTO dbo.Projects
-                    (ProjectNumber, ProjectName, TargetStart, CreateDate, CreatedBy, IsRequireMasterGroup, IsInitiative)
+                    (ProjectNumber, ProjectName, TargetStart, CreateDate, CreatedBy, IsRequireMasterGroup, IsInitiative, ProgramId, CommitmentCompanyId)
                 VALUES
-                    (@Projectcode, @Projectname, @Startdate, ISNULL(@CreatedOn, @Now), 5, 0, 0)
+                    (@Projectcode, @Projectname, @Startdate, ISNULL(@CreatedOn, @Now), 5, 0, 0, @ProgramId, @CommitmentCompanyId)
 
                 SET @Id = SCOPE_IDENTITY()
 
-                EXEC dbo.Log_AddAuditTrail 'Insert', 'dbo.Projects', 'PROJECT', @Id, 5, -1, 'Header', '', 'SAP_INTEGRATION'
-
-                INSERT INTO dbo.FileManager_Folders
-                            (FolderName, ObjectTypeId, ObjectId, ParentId, CreatedBy, CreatedDate)
-                    VALUES
-                            (NULL, 1, @Id, NULL, 5, @Now)
-
-                DECLARE @Project_TypeId AS TINYINT
-                SELECT @Project_TypeId = Id FROM dbo.ObjectTypes WHERE [TYPE] LIKE 'PROJECT'
-
-                IF NOT EXISTS (SELECT * FROM dbo.UserEntities WHERE UserId = 5 AND EntityTypeId = @Project_TypeId AND EntityId IN (-1, 0))
-                BEGIN
-                    INSERT INTO dbo.UserEntities ([UserId], [EntityTypeId], [EntityId])
-                    VALUES (5, @Project_TypeId, @Id)
-                END
-
-                EXEC dbo.Workflow_AddEntityWithoutTransaction 1, @Id, 5
-
-                UPDATE dbo.xx_project_stg_tbl_ib
-                SET ProcessStatus = 'S', ProcessError = 'Project processed successfully', DestProjectId = @Id, LastUpdateDate = @Now
-                WHERE Projectcode = @Projectcode AND ProcessStatus = 'N'
+                UPDATE [PMWEB\roopal.chauhan].[xx_project_stg_tbl_ib]
+                SET process_status = 'S', error_msg = 'Project processed successfully', pmweb_project_id = @Id, last_update_date = @Now
+                WHERE project_code = @Projectcode AND process_status = 'N'
             END
             ELSE
             BEGIN
-                UPDATE dbo.xx_project_stg_tbl_ib
-                SET ProcessStatus = 'E', ProcessError = @ErrorDesc, LastUpdateDate = @Now
-                WHERE Projectcode = @Projectcode AND ProcessStatus = 'N'
+                UPDATE [PMWEB\roopal.chauhan].[xx_project_stg_tbl_ib]
+                SET process_status = 'E', error_msg = @ErrorDesc, last_update_date = @Now
+                WHERE project_code = @Projectcode AND process_status = 'N'
             END
 
             FETCH NEXT FROM project_cursor INTO

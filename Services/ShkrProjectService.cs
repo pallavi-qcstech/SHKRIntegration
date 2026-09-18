@@ -17,10 +17,15 @@ public sealed class ShkrProjectService(
     private readonly ShkrSapApiOptions _options = shkrSapOptions.Value;
     private readonly ShkrDatabaseOptions _databaseOptions = databaseOptions.Value;
 
-    public async Task<List<Proj>> GetAllProjectsAsync(CancellationToken cancellationToken = default)
+    public async Task<List<Proj>> GetAllProjectsAsync(string? creatdon = null, CancellationToken cancellationToken = default)
     {
         var client = httpClientFactory.CreateClient(ShkrSapClientName);
         var requestUri = $"/sap/opu/odata/SAP/ZPS_PROJ_SRV/PROJSet?sap-client={_options.ShkrSapClient}";
+
+        if (!string.IsNullOrWhiteSpace(creatdon))
+        {
+            requestUri += $"&$filter=Creatdon eq '{creatdon}'";
+        }
 
         var envelope = await client.GetFromJsonAsync<ODataEnvelope<ODataResultSet<Proj>>>(requestUri, cancellationToken)
             ?? throw new InvalidOperationException($"SAP call to {requestUri} returned an empty response body.");
@@ -41,6 +46,7 @@ public sealed class ShkrProjectService(
         await command.ExecuteNonQueryAsync(cancellationToken);
     }
 
+    
     public async Task SaveProject(Proj project, CancellationToken cancellationToken = default)
     {
         var now = DateTime.Now;
@@ -48,46 +54,45 @@ public sealed class ShkrProjectService(
         await using var connection = new SqlConnection(_databaseOptions.ConnectionString);
         await connection.OpenAsync(cancellationToken);
 
-        const string existsSql = "SELECT COUNT(1) FROM dbo.xx_project_stg_tbl_ib WHERE Projectcode = @Projectcode";
+        const string existsSql = """
+            SELECT COUNT(1) FROM [PMWEB\roopal.chauhan].[xx_project_stg_tbl_ib] WHERE project_code = @ProjectCode
+            """;
 
         const string updateSql = """
-            UPDATE dbo.xx_project_stg_tbl_ib
-            SET ProjectProfile = @ProjectProfile, Projectname = @Projectname, Startdate = @Startdate,
-                CreatedOn = @CreatedOn, Companycode = @Companycode,
-                OperationFlag = @OperationFlag, ProcessStatus = @ProcessStatus, ProcessError = NULL,
-                LastUpdateDate = @LastUpdateDate
-            WHERE Projectcode = @Projectcode
+            UPDATE [PMWEB\roopal.chauhan].[xx_project_stg_tbl_ib]
+            SET project_name = @ProjectName, project_profile = @ProjectProfile, Start_Date = @StartDate,
+                company_code = @CompanyCode, operation_flag = @OperationFlag, process_status = @ProcessStatus,
+                error_msg = NULL, last_update_date = @LastUpdateDate
+            WHERE project_code = @ProjectCode
             """;
 
         const string insertSql = """
-            INSERT INTO dbo.xx_project_stg_tbl_ib
-                (ProjectProfile, Projectcode, Projectname, Startdate, CreatedOn, Companycode,
-                 OperationFlag, ProcessStatus, CreatedDate, LastUpdateDate)
+            INSERT INTO [PMWEB\roopal.chauhan].[xx_project_stg_tbl_ib]
+                (project_code, project_name, project_profile, Start_Date, company_code,
+                 operation_flag, process_status, creation_date, last_update_date)
             VALUES
-                (@ProjectProfile, @Projectcode, @Projectname, @Startdate, @CreatedOn, @Companycode,
-                 @OperationFlag, @ProcessStatus, @CreatedDate, @LastUpdateDate)
+                (@ProjectCode, @ProjectName, @ProjectProfile, @StartDate, @CompanyCode,
+                 @OperationFlag, @ProcessStatus, @CreationDate, @LastUpdateDate)
             """;
 
         await using var existsCmd = new SqlCommand(existsSql, connection);
-        existsCmd.Parameters.AddWithValue("@Projectcode", project.ProjectCode);
+        existsCmd.Parameters.AddWithValue("@ProjectCode", project.ProjectCode);
         var exists = (int)(await existsCmd.ExecuteScalarAsync(cancellationToken))! > 0;
 
         await using var command = new SqlCommand(exists ? updateSql : insertSql, connection);
+        command.Parameters.AddWithValue("@ProjectCode", project.ProjectCode);
+        command.Parameters.AddWithValue("@ProjectName", project.ProjectName);
         command.Parameters.AddWithValue("@ProjectProfile", project.ProjectProfile);
-        command.Parameters.AddWithValue("@Projectcode", project.ProjectCode);
-        command.Parameters.AddWithValue("@Projectname", project.ProjectName);
-        command.Parameters.AddWithValue("@Startdate", (object?)project.StartDate ?? DBNull.Value);
-        command.Parameters.AddWithValue("@CreatedOn", (object?)project.CreatedOn ?? DBNull.Value);
-        command.Parameters.AddWithValue("@Companycode", project.CompanyCode);
-        AddTrackingParameters(command, now);
-        await command.ExecuteNonQueryAsync(cancellationToken);
-    }
-
-    private static void AddTrackingParameters(SqlCommand command, DateTime now)
-    {
+        command.Parameters.AddWithValue("@StartDate", (object?)project.StartDate ?? DBNull.Value);
+        command.Parameters.AddWithValue("@CompanyCode", project.CompanyCode);
         command.Parameters.AddWithValue("@OperationFlag", "I");
         command.Parameters.AddWithValue("@ProcessStatus", "N");
-        command.Parameters.AddWithValue("@CreatedDate", now);
         command.Parameters.AddWithValue("@LastUpdateDate", now);
+        if (!exists)
+        {
+            command.Parameters.AddWithValue("@CreationDate", (object?)project.CreatedOn ?? DBNull.Value);
+        }
+
+        await command.ExecuteNonQueryAsync(cancellationToken);
     }
 }
