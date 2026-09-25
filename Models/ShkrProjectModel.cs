@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
@@ -9,6 +10,8 @@ public sealed partial class ODataDateTimeConverter : JsonConverter<DateTime?>
     [GeneratedRegex(@"^/Date\((-?\d+)\)/$")]
     private static partial Regex DatePattern();
 
+    private const string ZeroDate = "0000-00-00";
+
     public override DateTime? Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
     {
         if (reader.TokenType == JsonTokenType.Null)
@@ -17,19 +20,24 @@ public sealed partial class ODataDateTimeConverter : JsonConverter<DateTime?>
         }
 
         var raw = reader.GetString();
-        if (string.IsNullOrEmpty(raw))
+        if (string.IsNullOrEmpty(raw) || raw == ZeroDate)
         {
             return null;
         }
 
         var match = DatePattern().Match(raw);
-        if (!match.Success)
+        if (match.Success)
         {
-            throw new JsonException($"Unrecognized OData date format: '{raw}'.");
+            var epochMilliseconds = long.Parse(match.Groups[1].Value);
+            return DateTimeOffset.FromUnixTimeMilliseconds(epochMilliseconds).UtcDateTime;
         }
 
-        var epochMilliseconds = long.Parse(match.Groups[1].Value);
-        return DateTimeOffset.FromUnixTimeMilliseconds(epochMilliseconds).UtcDateTime;
+        if (DateTime.TryParse(raw, CultureInfo.InvariantCulture, DateTimeStyles.None, out var parsed))
+        {
+            return parsed;
+        }
+
+        throw new JsonException($"Unrecognized OData date format: '{raw}'.");
     }
 
     public override void Write(Utf8JsonWriter writer, DateTime? value, JsonSerializerOptions options)

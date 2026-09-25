@@ -3,6 +3,7 @@ using System.Net.Http.Json;
 using System.Text.Json;
 using Microsoft.Data.SqlClient;
 using Microsoft.Extensions.Options;
+using SHKRIntegration.Extensions;
 using SHKRIntegration.Models;
 using SHKRIntegration.Options;
 
@@ -59,6 +60,7 @@ public sealed class ShkrVendorService(
                 {
                     stoppingToken.ThrowIfCancellationRequested();
 
+                    //To check on this validation
                     if (!long.TryParse(detail.VendorId, out var numericVendorId))
                     {
                         logger.LogWarning("Vendor {VendorId}: VendorID is not numeric, skipped.", detail.VendorId);
@@ -222,7 +224,16 @@ public sealed class ShkrVendorService(
         var client = httpClientFactory.CreateClient(ShkrSapClientName);
 
         using var response = await client.PostAsJsonAsync(requestUri, requestBody, RequestSerializerOptions, cancellationToken);
-        response.EnsureSuccessStatusCode();
+
+        if (!response.IsSuccessStatusCode)
+        {
+            var sapErrorMessage = await response.ReadSapErrorMessageAsync(cancellationToken);
+            logger.LogError(
+                "SAP Vendor Details call failed with status {StatusCode}: {SapErrorMessage}",
+                (int)response.StatusCode, sapErrorMessage);
+            throw new HttpRequestException(
+                $"SAP Vendor Details call failed with status {(int)response.StatusCode} ({response.StatusCode}): {sapErrorMessage}");
+        }
 
         var envelope = await response.Content.ReadFromJsonAsync<ODataEnvelope<VendorHeaderData>>(cancellationToken)
             ?? throw new InvalidOperationException("SAP Vendor Details returned an empty response body.");
