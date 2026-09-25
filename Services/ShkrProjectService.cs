@@ -19,13 +19,6 @@ public sealed class ShkrProjectService(
     private readonly ShkrSapApiOptions _options = shkrSapOptions.Value;
     private readonly ShkrDatabaseOptions _databaseOptions = databaseOptions.Value;
 
-    // Both creatdon and projectCode are confirmed non-functional server-side as of 2026-09-25 (and
-    // creatdon since 2026-09-16) - PROJSet's $metadata declares every property sap:filterable="false",
-    // and this was verified behaviorally too: $filter=Projectcode eq '<real code>' still returns the
-    // full ~318-row unfiltered set, tested against multiple real project codes. Kept anyway, same as
-    // creatdon, so the request already matches the agreed contract if/when SAP enables filtering.
-    // Don't rely on either parameter to actually scope the response - filter client-side on the
-    // returned list instead.
     public async Task<List<Proj>> GetAllProjectsAsync(
         string? creatdon = null, string? projectCode = null, CancellationToken cancellationToken = default)
     {
@@ -77,7 +70,6 @@ public sealed class ShkrProjectService(
         await command.ExecuteNonQueryAsync(cancellationToken);
     }
 
-    
     public async Task SaveProject(Proj project, CancellationToken cancellationToken = default)
     {
         var now = DateTime.Now;
@@ -85,10 +77,6 @@ public sealed class ShkrProjectService(
         await using var connection = new SqlConnection(_databaseOptions.ConnectionString);
         await connection.OpenAsync(cancellationToken);
 
-        // Real schema confirmed live on production 2026-09-25 (INFORMATION_SCHEMA.COLUMNS query) -
-        // dbo.xx_project_stg_tbl_ib uses snake_case columns, NOT the PascalCase this file briefly
-        // reverted to. record_id is a real IDENTITY column, never included in the INSERT. End_Date
-        // and attribute1-10 have no source yet and are left NULL by omission.
         const string existsSql = "SELECT COUNT(1) FROM dbo.xx_project_stg_tbl_ib WHERE project_code = @ProjectCode";
 
         const string updateSql = """

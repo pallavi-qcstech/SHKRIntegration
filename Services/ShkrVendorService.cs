@@ -60,7 +60,6 @@ public sealed class ShkrVendorService(
                 {
                     stoppingToken.ThrowIfCancellationRequested();
 
-                    //To check on this validation
                     if (!long.TryParse(detail.VendorId, out var numericVendorId))
                     {
                         logger.LogWarning("Vendor {VendorId}: VendorID is not numeric, skipped.", detail.VendorId);
