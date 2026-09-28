@@ -31,6 +31,7 @@ builder.Services.AddShkrSapApiOptions(builder.Configuration);
 builder.Services.AddShkrDatabaseOptions(builder.Configuration);
 builder.Services.AddVendors(builder.Configuration);
 builder.Services.AddProjects();
+builder.Services.AddCostCodes();
 
 builder.Services.AddIntegrationHealthChecks();
 
@@ -73,6 +74,46 @@ app.MapPost("/projects/sync", async (
     return Results.Ok(new
     {
         fetched = projects.Count,
+        staged,
+        failed = errors.Count,
+        errors
+    });
+});
+
+app.MapPost("/costcodes/sync", async (
+    ShkrCostCodeService costCodeService,
+    string projectCode,
+    ILogger<Program> logger,
+    CancellationToken cancellationToken) =>
+{
+    var wbsRows = await costCodeService.GetWbsHierarchyAsync(projectCode, cancellationToken);
+
+    logger.LogInformation(
+        "Manual cost code sync: {Count} WBS row(s) fetched for {ProjectCode}, staging and promoting.",
+        wbsRows.Count, projectCode);
+
+    var staged = 0;
+    var errors = new List<string>();
+
+    foreach (var wbs in wbsRows)
+    {
+        try
+        {
+            await costCodeService.SaveCostCode(wbs, cancellationToken);
+            staged++;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            logger.LogError(ex, "Cost code sync failed to stage WBS {Wbs} for project {ProjectCode}.", wbs.Wbs, projectCode);
+            errors.Add($"{wbs.Wbs}: {ex.Message}");
+        }
+    }
+
+    await costCodeService.RunShkrCostCodesAsync(cancellationToken);
+
+    return Results.Ok(new
+    {
+        fetched = wbsRows.Count,
         staged,
         failed = errors.Count,
         errors
