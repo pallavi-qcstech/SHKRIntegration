@@ -17,7 +17,6 @@ public sealed class ShkrCostCodeService(
     private readonly ShkrSapApiOptions _options = shkrSapOptions.Value;
     private readonly ShkrDatabaseOptions _databaseOptions = databaseOptions.Value;
 
-    
     public async Task<List<WbsHierarchy>> GetWbsHierarchyAsync(
         string projectCode, CancellationToken cancellationToken = default)
     {
@@ -50,8 +49,6 @@ public sealed class ShkrCostCodeService(
         await using var connection = new SqlConnection(_databaseOptions.ConnectionString);
         await connection.OpenAsync(cancellationToken);
 
-        // Business key = (project_code, sap_wbs): re-running a sync for the same project
-        // refreshes existing WBS rows instead of duplicating them.
         const string existsSql =
             "SELECT COUNT(1) FROM dbo.xx_sap_costcode_stg_tbl_ib WHERE project_code = @ProjectCode AND sap_wbs = @SapWbs";
 
@@ -84,15 +81,8 @@ public sealed class ShkrCostCodeService(
         command.Parameters.AddWithValue("@SapWbsName", wbs.Name);
         command.Parameters.AddWithValue("@ParentWbs", string.IsNullOrEmpty(wbs.UpWbs) ? DBNull.Value : wbs.UpWbs);
 
-        // NOT YET CONFIRMED: staging SAP's DETAIL field  ("WBS Element" / "Network" /
-        // "Activity"). SHK_INT_SAPCOSTCODE_IB_PRC's logic compares against the literal
-        // "Network Activity", which will never match live SAP's "Activity" value as staged here -
-        // flagged to the user, not silently translated. 
         command.Parameters.AddWithValue("@WbsType", wbs.Detail);
 
-        // NOT YET CONFIRMED: sap_stripped_wbs's real stripping rule is unknown - defaulting to a
-        // verbatim copy of sap_wbs (identity transform, no data loss) until the business rule is
-        // provided. Same doc as above.
         command.Parameters.AddWithValue("@SapStrippedWbs", wbs.Wbs);
 
         command.Parameters.AddWithValue("@OperationFlag", "I");
