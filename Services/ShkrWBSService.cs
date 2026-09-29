@@ -8,11 +8,11 @@ using SHKRIntegration.Options;
 
 namespace SHKRIntegration.Services;
 
-public sealed class ShkrCostCodeService(
+public sealed class ShkrWBSService(
     IHttpClientFactory httpClientFactory,
     IOptions<ShkrSapApiOptions> shkrSapOptions,
     IOptions<ShkrDatabaseOptions> databaseOptions,
-    ILogger<ShkrCostCodeService> logger)
+    ILogger<ShkrWBSService> logger)
 {
     private readonly ShkrSapApiOptions _options = shkrSapOptions.Value;
     private readonly ShkrDatabaseOptions _databaseOptions = databaseOptions.Value;
@@ -42,7 +42,7 @@ public sealed class ShkrCostCodeService(
         return envelope.D.Results;
     }
 
-    public async Task SaveCostCode(WbsHierarchy wbs, CancellationToken cancellationToken = default)
+    public async Task SaveWbs(WbsHierarchy wbs, CancellationToken cancellationToken = default)
     {
         var now = DateTime.Now;
 
@@ -55,18 +55,22 @@ public sealed class ShkrCostCodeService(
         const string updateSql = """
             UPDATE dbo.xx_sap_costcode_stg_tbl_ib
             SET project_name = @ProjectName, sap_wbs_name = @SapWbsName, parent_wbs = @ParentWbs,
-                wbs_type = @WbsType, sap_stripped_wbs = @SapStrippedWbs, operation_flag = @OperationFlag,
-                process_status = @ProcessStatus, error_msg = NULL, last_update_date = @LastUpdateDate
+                wbs_type = @WbsType, sap_stripped_wbs = @SapStrippedWbs, plant = @Plant,
+                con_key = @ConKey, func_area = @FuncArea, sap_createdon = @SapCreatedOn,
+                operation_flag = @OperationFlag, process_status = @ProcessStatus, error_msg = NULL,
+                last_update_date = @LastUpdateDate
             WHERE project_code = @ProjectCode AND sap_wbs = @SapWbs
             """;
 
         const string insertSql = """
             INSERT INTO dbo.xx_sap_costcode_stg_tbl_ib
                 (project_code, project_name, sap_wbs, sap_wbs_name, parent_wbs, wbs_type,
-                 sap_stripped_wbs, operation_flag, process_status, creation_date, last_update_date)
+                 sap_stripped_wbs, plant, con_key, func_area, sap_createdon, operation_flag,
+                 process_status, creation_date, last_update_date)
             VALUES
                 (@ProjectCode, @ProjectName, @SapWbs, @SapWbsName, @ParentWbs, @WbsType,
-                 @SapStrippedWbs, @OperationFlag, @ProcessStatus, @CreationDate, @LastUpdateDate)
+                 @SapStrippedWbs, @Plant, @ConKey, @FuncArea, @SapCreatedOn, @OperationFlag,
+                 @ProcessStatus, @CreationDate, @LastUpdateDate)
             """;
 
         await using var existsCmd = new SqlCommand(existsSql, connection);
@@ -85,6 +89,11 @@ public sealed class ShkrCostCodeService(
 
         command.Parameters.AddWithValue("@SapStrippedWbs", wbs.Wbs);
 
+        command.Parameters.AddWithValue("@Plant", string.IsNullOrEmpty(wbs.Plant) ? DBNull.Value : wbs.Plant);
+        command.Parameters.AddWithValue("@ConKey", string.IsNullOrEmpty(wbs.ConKey) ? DBNull.Value : wbs.ConKey);
+        command.Parameters.AddWithValue("@FuncArea", string.IsNullOrEmpty(wbs.FuncArea) ? DBNull.Value : wbs.FuncArea);
+        command.Parameters.AddWithValue("@SapCreatedOn", string.IsNullOrEmpty(wbs.CreatedOn) ? DBNull.Value : wbs.CreatedOn);
+
         command.Parameters.AddWithValue("@OperationFlag", "I");
         command.Parameters.AddWithValue("@ProcessStatus", "N");
         command.Parameters.AddWithValue("@LastUpdateDate", now);
@@ -96,7 +105,7 @@ public sealed class ShkrCostCodeService(
         await command.ExecuteNonQueryAsync(cancellationToken);
     }
 
-    public async Task RunShkrCostCodesAsync(CancellationToken cancellationToken = default)
+    public async Task RunShkrWBSAsync(CancellationToken cancellationToken = default)
     {
         await using var connection = new SqlConnection(_databaseOptions.ConnectionString);
         await connection.OpenAsync(cancellationToken);
