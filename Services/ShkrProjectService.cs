@@ -70,6 +70,35 @@ public sealed class ShkrProjectService(
         await command.ExecuteNonQueryAsync(cancellationToken);
     }
 
+    public async Task<SyncResult> SyncAllAsync(
+        string? projectCode, string? creatdon, CancellationToken cancellationToken = default)
+    {
+        var projects = await GetAllProjectsAsync(creatdon, projectCode, cancellationToken);
+
+        logger.LogInformation("Manual project sync: {Count} project(s) fetched, staging and promoting.", projects.Count);
+
+        var staged = 0;
+        var errors = new List<string>();
+
+        foreach (var project in projects)
+        {
+            try
+            {
+                await SaveProject(project, cancellationToken);
+                staged++;
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                logger.LogError(ex, "Project sync failed to stage ProjectCode {ProjectCode}.", project.ProjectCode);
+                errors.Add($"{project.ProjectCode}: {ex.Message}");
+            }
+        }
+
+        await RunShkrProjectsAsync(cancellationToken);
+
+        return new SyncResult(projects.Count, staged, errors.Count, errors);
+    }
+
     public async Task SaveProject(Proj project, CancellationToken cancellationToken = default)
     {
         var now = DateTime.Now;

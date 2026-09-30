@@ -142,4 +142,34 @@ public sealed class ShkrWBSService(
 
         await command.ExecuteNonQueryAsync(cancellationToken);
     }
+
+    public async Task<SyncResult> SyncAllAsync(string projectCode, CancellationToken cancellationToken = default)
+    {
+        var wbsRows = await GetWbsHierarchyAsync(projectCode, cancellationToken);
+
+        logger.LogInformation(
+            "Manual WBS sync: {Count} WBS row(s) fetched for {ProjectCode}, staging and promoting.",
+            wbsRows.Count, projectCode);
+
+        var staged = 0;
+        var errors = new List<string>();
+
+        foreach (var wbs in wbsRows)
+        {
+            try
+            {
+                await SaveWbs(wbs, cancellationToken);
+                staged++;
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                logger.LogError(ex, "WBS sync failed to stage WBS {Wbs} for project {ProjectCode}.", wbs.Wbs, projectCode);
+                errors.Add($"{wbs.Wbs}: {ex.Message}");
+            }
+        }
+
+        await RunShkrWBSAsync(cancellationToken);
+
+        return new SyncResult(wbsRows.Count, staged, errors.Count, errors);
+    }
 }
