@@ -1,5 +1,6 @@
 using System.Data;
 using System.Net.Http.Json;
+using System.Text.Encodings.Web;
 using System.Text.Json;
 using Microsoft.Data.SqlClient;
 using Microsoft.Extensions.Options;
@@ -22,7 +23,10 @@ public sealed class ShkrVendorService(
     private readonly ShkrVendorOptions _vendorOptions = vendorOptions.Value;
     private readonly ShkrDatabaseOptions _databaseOptions = databaseOptions.Value;
 
-    private static readonly JsonSerializerOptions RequestSerializerOptions = new(JsonSerializerDefaults.General);
+    private static readonly JsonSerializerOptions RequestSerializerOptions = new(JsonSerializerDefaults.General)
+    {
+        Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping
+    };
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
