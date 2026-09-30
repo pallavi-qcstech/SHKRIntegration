@@ -87,7 +87,7 @@ public sealed class ShkrWBSService(
 
         command.Parameters.AddWithValue("@WbsType", wbs.Detail);
 
-        command.Parameters.AddWithValue("@SapStrippedWbs", wbs.Wbs);
+        command.Parameters.AddWithValue("@SapStrippedWbs", ComputeSapStrippedWbs(wbs));
 
         command.Parameters.AddWithValue("@Plant", string.IsNullOrEmpty(wbs.Plant) ? DBNull.Value : wbs.Plant);
         command.Parameters.AddWithValue("@ConKey", string.IsNullOrEmpty(wbs.ConKey) ? DBNull.Value : wbs.ConKey);
@@ -103,6 +103,31 @@ public sealed class ShkrWBSService(
         }
 
         await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    private string ComputeSapStrippedWbs(WbsHierarchy wbs)
+    {
+        if (string.IsNullOrEmpty(wbs.UpWbs))
+        {
+            return wbs.Wbs;
+        }
+
+        if (string.Equals(wbs.Detail, "Network", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(wbs.Detail, "Activity", StringComparison.OrdinalIgnoreCase))
+        {
+            return wbs.Wbs;
+        }
+
+        var prefix = wbs.UpWbs + "-";
+        if (wbs.Wbs.StartsWith(prefix, StringComparison.Ordinal) && wbs.Wbs.Length > prefix.Length)
+        {
+            return wbs.Wbs[prefix.Length..].Trim();
+        }
+
+        logger.LogWarning(
+            "WBS {Wbs} under parent {ParentWbs} does not start with the expected parent prefix; sap_stripped_wbs staged as empty.",
+            wbs.Wbs, wbs.UpWbs);
+        return string.Empty;
     }
 
     public async Task RunShkrWBSAsync(CancellationToken cancellationToken = default)
