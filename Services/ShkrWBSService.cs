@@ -66,11 +66,11 @@ public sealed class ShkrWBSService(
             INSERT INTO dbo.xx_sap_costcode_stg_tbl_ib
                 (project_code, project_name, sap_wbs, sap_wbs_name, parent_wbs, wbs_type,
                  sap_stripped_wbs, plant, con_key, func_area, sap_createdon, operation_flag,
-                 process_status, creation_date, last_update_date)
+                 process_status, process_status_wbs, creation_date, last_update_date)
             VALUES
                 (@ProjectCode, @ProjectName, @SapWbs, @SapWbsName, @ParentWbs, @WbsType,
                  @SapStrippedWbs, @Plant, @ConKey, @FuncArea, @SapCreatedOn, @OperationFlag,
-                 @ProcessStatus, @CreationDate, @LastUpdateDate)
+                 @ProcessStatus, @ProcessStatusWbs, @CreationDate, @LastUpdateDate)
             """;
 
         await using var existsCmd = new SqlCommand(existsSql, connection);
@@ -100,6 +100,7 @@ public sealed class ShkrWBSService(
         if (!exists)
         {
             command.Parameters.AddWithValue("@CreationDate", now);
+            command.Parameters.AddWithValue("@ProcessStatusWbs", "N");
         }
 
         await command.ExecuteNonQueryAsync(cancellationToken);

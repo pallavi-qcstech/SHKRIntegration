@@ -4,10 +4,10 @@ using SHKRIntegration.Services;
 namespace SHKRIntegration.Controllers;
 
 [ApiController]
-[Route("projects")]
+[Route("SHKRIntegration/api/Inbound")]
 public sealed class ProjectController(ShkrProjectService projectService) : ControllerBase
 {
-    [HttpPost("sync")]
+    [HttpPost("project")]
     public async Task<IActionResult> Sync(
         [FromQuery] string? projectCode, [FromQuery] string? creatdon, CancellationToken cancellationToken)
     {
