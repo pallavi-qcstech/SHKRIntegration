@@ -108,27 +108,23 @@ public sealed class ShkrWBSService(
 
     private string ComputeSapStrippedWbs(WbsHierarchy wbs)
     {
-        if (string.IsNullOrEmpty(wbs.UpWbs))
+        if (string.IsNullOrEmpty(wbs.UpWbs) ||
+            !string.Equals(wbs.Detail, "WBS Element", StringComparison.OrdinalIgnoreCase))
         {
             return wbs.Wbs;
         }
 
-        if (string.Equals(wbs.Detail, "Network", StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(wbs.Detail, "Activity", StringComparison.OrdinalIgnoreCase))
+        var suffixLength = wbs.Wbs.Length - wbs.UpWbs.Length;
+        if (suffixLength <= 0)
         {
-            return wbs.Wbs;
+            logger.LogWarning(
+                "WBS {Wbs} is not longer than its parent {ParentWbs}; sap_stripped_wbs staged as empty.",
+                wbs.Wbs, wbs.UpWbs);
+            return string.Empty;
         }
 
-        var prefix = wbs.UpWbs + "-";
-        if (wbs.Wbs.StartsWith(prefix, StringComparison.Ordinal) && wbs.Wbs.Length > prefix.Length)
-        {
-            return wbs.Wbs[prefix.Length..].Trim();
-        }
-
-        logger.LogWarning(
-            "WBS {Wbs} under parent {ParentWbs} does not start with the expected parent prefix; sap_stripped_wbs staged as empty.",
-            wbs.Wbs, wbs.UpWbs);
-        return string.Empty;
+        var suffix = wbs.Wbs[^suffixLength..];
+        return suffix[0] == '-' ? suffix[1..] : suffix;
     }
 
     public async Task RunShkrWBSAsync(CancellationToken cancellationToken = default)
