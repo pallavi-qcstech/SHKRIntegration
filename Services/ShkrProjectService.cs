@@ -70,7 +70,7 @@ public sealed class ShkrProjectService(
         await command.ExecuteNonQueryAsync(cancellationToken);
     }
 
-    public async Task<SyncResult> SyncAllAsync(
+    public async Task<SyncResult> FetchSapDataToStagingTableAsync(
         string? projectCode, string? creatdon, CancellationToken cancellationToken = default)
     {
         var projects = await GetAllProjectsAsync(creatdon, projectCode, cancellationToken);

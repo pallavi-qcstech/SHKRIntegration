@@ -10,7 +10,7 @@ public sealed class WBSController(ShkrWBSService wbsService) : ControllerBase
     [HttpPost("wbs")]
     public async Task<IActionResult> Sync([FromQuery] string projectCode, CancellationToken cancellationToken)
     {
-        var result = await wbsService.SyncAllAsync(projectCode, cancellationToken);
+        var result = await wbsService.FetchSapDataToStagingTableAsync(projectCode, cancellationToken);
         return Ok(result);
     }
 }

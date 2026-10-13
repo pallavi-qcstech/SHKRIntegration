@@ -11,7 +11,7 @@ public sealed class ProjectController(ShkrProjectService projectService) : Contr
     public async Task<IActionResult> Sync(
         [FromQuery] string? projectCode, [FromQuery] string? creatdon, CancellationToken cancellationToken)
     {
-        var result = await projectService.SyncAllAsync(projectCode, creatdon, cancellationToken);
+        var result = await projectService.FetchSapDataToStagingTableAsync(projectCode, creatdon, cancellationToken);
         return Ok(result);
     }
 }

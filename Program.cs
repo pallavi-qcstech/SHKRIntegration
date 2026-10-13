@@ -31,6 +31,8 @@ builder.Services.AddShkrDatabaseOptions(builder.Configuration);
 builder.Services.AddVendors(builder.Configuration);
 builder.Services.AddProjects();
 builder.Services.AddWBS();
+builder.Services.AddSalesOrders();
+builder.Services.AddDeliveries();
 
 builder.Services.AddIntegrationHealthChecks();
 

@@ -140,7 +140,7 @@ public sealed class ShkrWBSService(
         await command.ExecuteNonQueryAsync(cancellationToken);
     }
 
-    public async Task<SyncResult> SyncAllAsync(string projectCode, CancellationToken cancellationToken = default)
+    public async Task<SyncResult> FetchSapDataToStagingTableAsync(string projectCode, CancellationToken cancellationToken = default)
     {
         var wbsRows = await GetWbsHierarchyAsync(projectCode, cancellationToken);
 
