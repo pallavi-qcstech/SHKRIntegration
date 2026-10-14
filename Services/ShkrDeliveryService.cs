@@ -107,8 +107,8 @@ public sealed class ShkrDeliveryService(
 
         try
         {
-            await SaveHeader(connection, transaction, delivery, now, cancellationToken);
-            await SaveLines(connection, transaction, delivery.DeliveryNumber, delivery.Lines.Results, now, cancellationToken);
+            var hdrRecordId = await SaveHeader(connection, transaction, delivery, now, cancellationToken);
+            await SaveLines(connection, transaction, delivery.DeliveryNumber, hdrRecordId, delivery.Lines.Results, now, cancellationToken);
 
             await transaction.CommitAsync(cancellationToken);
         }
@@ -119,7 +119,7 @@ public sealed class ShkrDeliveryService(
         }
     }
 
-    private static async Task SaveHeader(
+    private static async Task<long> SaveHeader(
         SqlConnection connection, SqlTransaction transaction, DeliveryHeader d, DateTime now,
         CancellationToken cancellationToken)
     {
@@ -143,6 +143,7 @@ public sealed class ShkrDeliveryService(
                 BillingStatusDesc = @BillingStatusDesc,
                 operation_flag = @OperationFlag, process_status = @ProcessStatus, error_msg = NULL,
                 last_update_date = @StagingLastUpdateDate
+            OUTPUT INSERTED.record_id
             WHERE DeliveryNumber = @DeliveryNumber
             """;
 
@@ -155,6 +156,7 @@ public sealed class ShkrDeliveryService(
                  OverallPickingStatus, OverallPickingStatusDesc, WarehouseActivityStatus,
                  WarehouseActivityStatusDesc, BillingStatusDesc,
                  operation_flag, process_status, creation_date, last_update_date)
+            OUTPUT INSERTED.record_id
             VALUES
                 (@DeliveryNumber, @CreationDateTime, @LastUpdateDateTime, @CreatedByName, @DocumentDate,
                  @DocumentStatus, @ShipToPartyNumber, @ShippingPoint, @ShippingPointName, @DateTo, @DateFrom,
@@ -202,11 +204,11 @@ public sealed class ShkrDeliveryService(
             command.Parameters.AddWithValue("@StagingCreationDate", now.Date);
         }
 
-        await command.ExecuteNonQueryAsync(cancellationToken);
+        return (long)(await command.ExecuteScalarAsync(cancellationToken))!;
     }
 
     private static async Task SaveLines(
-        SqlConnection connection, SqlTransaction transaction, string deliveryNumber,
+        SqlConnection connection, SqlTransaction transaction, string deliveryNumber, long hdrRecordId,
         IReadOnlyList<DeliveryLine> lines, DateTime now, CancellationToken cancellationToken)
     {
         const string existsSql = """
@@ -216,7 +218,7 @@ public sealed class ShkrDeliveryService(
 
         const string updateSql = """
             UPDATE dbo.xx_delivery_line_stg_tbl_ib
-            SET SalesOrderNumber = @SalesOrderNumber, Material = @Material, ItemDescription = @ItemDescription,
+            SET hdr_record_id = @HdrRecordId, SalesOrderNumber = @SalesOrderNumber, Material = @Material, ItemDescription = @ItemDescription,
                 DeliveredQuantity = @DeliveredQuantity, PickedQuantity = @PickedQuantity, Uom = @Uom,
                 Plant = @Plant, WarehouseNo = @WarehouseNo, Quantity = @Quantity, Status = @Status,
                 WbsElement = @WbsElement, SalesOrderItem = @SalesOrderItem,
@@ -233,14 +235,14 @@ public sealed class ShkrDeliveryService(
 
         const string insertSql = """
             INSERT INTO dbo.xx_delivery_line_stg_tbl_ib
-                (DeliveryNumber, LineNumber, SalesOrderNumber, Material, ItemDescription, DeliveredQuantity,
+                (hdr_record_id, DeliveryNumber, LineNumber, SalesOrderNumber, Material, ItemDescription, DeliveredQuantity,
                  PickedQuantity, Uom, Plant, WarehouseNo, Quantity, Status, WbsElement, SalesOrderItem,
                  OriginalDeliveryNumber, OriginalDeliveryItem, ItemChangeDate, PickingStatus, PickingStatusDesc,
                  WarehouseActivityStatus, WarehouseActivityStatusDesc, GoodsMovementStatus,
                  GoodsMovementStatusDesc, BillingStatus, BillingStatusDesc,
                  operation_flag, process_status, creation_date, last_update_date)
             VALUES
-                (@DeliveryNumber, @LineNumber, @SalesOrderNumber, @Material, @ItemDescription, @DeliveredQuantity,
+                (@HdrRecordId, @DeliveryNumber, @LineNumber, @SalesOrderNumber, @Material, @ItemDescription, @DeliveredQuantity,
                  @PickedQuantity, @Uom, @Plant, @WarehouseNo, @Quantity, @Status, @WbsElement, @SalesOrderItem,
                  @OriginalDeliveryNumber, @OriginalDeliveryItem, @ItemChangeDate, @PickingStatus, @PickingStatusDesc,
                  @WarehouseActivityStatus, @WarehouseActivityStatusDesc, @GoodsMovementStatus,
@@ -254,6 +256,7 @@ public sealed class ShkrDeliveryService(
                 ("@DeliveryNumber", deliveryNumber), ("@LineNumber", line.LineNumber));
 
             await using var command = new SqlCommand(exists ? updateSql : insertSql, connection, transaction);
+            command.Parameters.AddWithValue("@HdrRecordId", hdrRecordId);
             command.Parameters.AddWithValue("@DeliveryNumber", deliveryNumber);
             command.Parameters.AddWithValue("@LineNumber", line.LineNumber);
             command.Parameters.AddWithValue("@SalesOrderNumber", line.SalesOrderNumber);

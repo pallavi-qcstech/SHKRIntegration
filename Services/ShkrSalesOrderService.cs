@@ -107,8 +107,8 @@ public sealed class ShkrSalesOrderService(
 
         try
         {
-            await SaveHeader(connection, transaction, order, now, cancellationToken);
-            await SaveLines(connection, transaction, order.SalesDocumentNumber, order.Lines.Results, now, cancellationToken);
+            var hdrRecordId = await SaveHeader(connection, transaction, order, now, cancellationToken);
+            await SaveLines(connection, transaction, order.SalesDocumentNumber, hdrRecordId, order.Lines.Results, now, cancellationToken);
 
             await transaction.CommitAsync(cancellationToken);
         }
@@ -119,7 +119,7 @@ public sealed class ShkrSalesOrderService(
         }
     }
 
-    private static async Task SaveHeader(
+    private static async Task<long> SaveHeader(
         SqlConnection connection, SqlTransaction transaction, SalesOrderHeader o, DateTime now,
         CancellationToken cancellationToken)
     {
@@ -151,6 +151,7 @@ public sealed class ShkrSalesOrderService(
                 VatAmount = @VatAmount, VatPercentage = @VatPercentage, Version = @Version,
                 operation_flag = @OperationFlag, process_status = @ProcessStatus, error_msg = NULL,
                 last_update_date = @StagingLastUpdateDate
+            OUTPUT INSERTED.record_id
             WHERE SalesDocumentNumber = @SalesDocumentNumber
             """;
 
@@ -166,6 +167,7 @@ public sealed class ShkrSalesOrderService(
                  RetentionAmt, RetentionPercentage, SalesGroup, SalesOffice, SalesPersonCommission,
                  SalesPersonName, SalesPersonNumber, ShipToPartyNumber, VatAmount, VatPercentage, Version,
                  operation_flag, process_status, creation_date, last_update_date)
+            OUTPUT INSERTED.record_id
             VALUES
                 (@CreationDateTime, @DocumentDate, @IsReturnOrder, @IsSaleOrder, @ItemChangeDate,
                  @LastUpdateDateTime, @SalesDocumentNumber, @SalesOrg, @SoldToPartyNumber, @AdvanceAmt,
@@ -239,11 +241,11 @@ public sealed class ShkrSalesOrderService(
             command.Parameters.AddWithValue("@StagingCreationDate", now.Date);
         }
 
-        await command.ExecuteNonQueryAsync(cancellationToken);
+        return (long)(await command.ExecuteScalarAsync(cancellationToken))!;
     }
 
     private static async Task SaveLines(
-        SqlConnection connection, SqlTransaction transaction, string salesDocumentNumber,
+        SqlConnection connection, SqlTransaction transaction, string salesDocumentNumber, long hdrRecordId,
         IReadOnlyList<SalesOrderLine> lines, DateTime now, CancellationToken cancellationToken)
     {
         const string existsSql = """
@@ -253,7 +255,7 @@ public sealed class ShkrSalesOrderService(
 
         const string updateSql = """
             UPDATE dbo.xx_salesorder_line_stg_tbl_ib
-            SET ItemChangeDate = @ItemChangeDate, Material = @Material, ItemDescription = @ItemDescription,
+            SET hdr_record_id = @HdrRecordId, ItemChangeDate = @ItemChangeDate, Material = @Material, ItemDescription = @ItemDescription,
                 WbsElement = @WbsElement, WbsDescription = @WbsDescription, ProjectCode = @ProjectCode,
                 ProjectDescription = @ProjectDescription, Quantity = @Quantity, Uom = @Uom, Plant = @Plant,
                 StorageLocation = @StorageLocation, GrossUnitPrice = @GrossUnitPrice,
@@ -275,7 +277,7 @@ public sealed class ShkrSalesOrderService(
 
         const string insertSql = """
             INSERT INTO dbo.xx_salesorder_line_stg_tbl_ib
-                (ItemChangeDate, SalesDocumentNumber, LineNumber, Material, ItemDescription, WbsElement,
+                (hdr_record_id, ItemChangeDate, SalesDocumentNumber, LineNumber, Material, ItemDescription, WbsElement,
                  WbsDescription, ProjectCode, ProjectDescription, Quantity, Uom, Plant, StorageLocation,
                  GrossUnitPrice, TotalGrossAmount, DiscPercentage, DiscAmount, TotalDiscAmount, VatPercentage,
                  TotalVatAmount, NetValueWithTax, AdvancePercentage, AdvanceAmt, InstallationCharges,
@@ -284,7 +286,7 @@ public sealed class ShkrSalesOrderService(
                  QuotationNumber, QuotationItem,
                  operation_flag, process_status, creation_date, last_update_date)
             VALUES
-                (@ItemChangeDate, @SalesDocumentNumber, @LineNumber, @Material, @ItemDescription, @WbsElement,
+                (@HdrRecordId, @ItemChangeDate, @SalesDocumentNumber, @LineNumber, @Material, @ItemDescription, @WbsElement,
                  @WbsDescription, @ProjectCode, @ProjectDescription, @Quantity, @Uom, @Plant, @StorageLocation,
                  @GrossUnitPrice, @TotalGrossAmount, @DiscPercentage, @DiscAmount, @TotalDiscAmount, @VatPercentage,
                  @TotalVatAmount, @NetValueWithTax, @AdvancePercentage, @AdvanceAmt, @InstallationCharges,
@@ -300,6 +302,7 @@ public sealed class ShkrSalesOrderService(
                 ("@SalesDocumentNumber", salesDocumentNumber), ("@LineNumber", line.LineNumber));
 
             await using var command = new SqlCommand(exists ? updateSql : insertSql, connection, transaction);
+            command.Parameters.AddWithValue("@HdrRecordId", hdrRecordId);
             command.Parameters.AddWithValue("@ItemChangeDate", line.ItemChangeDate);
             command.Parameters.AddWithValue("@SalesDocumentNumber", salesDocumentNumber);
             command.Parameters.AddWithValue("@LineNumber", line.LineNumber);
