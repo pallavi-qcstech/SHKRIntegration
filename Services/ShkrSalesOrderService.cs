@@ -247,12 +247,12 @@ public sealed class ShkrSalesOrderService(
         IReadOnlyList<SalesOrderLine> lines, DateTime now, CancellationToken cancellationToken)
     {
         const string existsSql = """
-            SELECT COUNT(1) FROM dbo.xx_salesorder_lines_stg_tbl_ib
+            SELECT COUNT(1) FROM dbo.xx_salesorder_line_stg_tbl_ib
             WHERE SalesDocumentNumber = @SalesDocumentNumber AND LineNumber = @LineNumber
             """;
 
         const string updateSql = """
-            UPDATE dbo.xx_salesorder_lines_stg_tbl_ib
+            UPDATE dbo.xx_salesorder_line_stg_tbl_ib
             SET ItemChangeDate = @ItemChangeDate, Material = @Material, ItemDescription = @ItemDescription,
                 WbsElement = @WbsElement, WbsDescription = @WbsDescription, ProjectCode = @ProjectCode,
                 ProjectDescription = @ProjectDescription, Quantity = @Quantity, Uom = @Uom, Plant = @Plant,
@@ -274,7 +274,7 @@ public sealed class ShkrSalesOrderService(
             """;
 
         const string insertSql = """
-            INSERT INTO dbo.xx_salesorder_lines_stg_tbl_ib
+            INSERT INTO dbo.xx_salesorder_line_stg_tbl_ib
                 (ItemChangeDate, SalesDocumentNumber, LineNumber, Material, ItemDescription, WbsElement,
                  WbsDescription, ProjectCode, ProjectDescription, Quantity, Uom, Plant, StorageLocation,
                  GrossUnitPrice, TotalGrossAmount, DiscPercentage, DiscAmount, TotalDiscAmount, VatPercentage,

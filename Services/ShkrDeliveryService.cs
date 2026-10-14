@@ -210,12 +210,12 @@ public sealed class ShkrDeliveryService(
         IReadOnlyList<DeliveryLine> lines, DateTime now, CancellationToken cancellationToken)
     {
         const string existsSql = """
-            SELECT COUNT(1) FROM dbo.xx_delivery_lines_stg_tbl_ib
+            SELECT COUNT(1) FROM dbo.xx_delivery_line_stg_tbl_ib
             WHERE DeliveryNumber = @DeliveryNumber AND LineNumber = @LineNumber
             """;
 
         const string updateSql = """
-            UPDATE dbo.xx_delivery_lines_stg_tbl_ib
+            UPDATE dbo.xx_delivery_line_stg_tbl_ib
             SET SalesOrderNumber = @SalesOrderNumber, Material = @Material, ItemDescription = @ItemDescription,
                 DeliveredQuantity = @DeliveredQuantity, PickedQuantity = @PickedQuantity, Uom = @Uom,
                 Plant = @Plant, WarehouseNo = @WarehouseNo, Quantity = @Quantity, Status = @Status,
@@ -232,7 +232,7 @@ public sealed class ShkrDeliveryService(
             """;
 
         const string insertSql = """
-            INSERT INTO dbo.xx_delivery_lines_stg_tbl_ib
+            INSERT INTO dbo.xx_delivery_line_stg_tbl_ib
                 (DeliveryNumber, LineNumber, SalesOrderNumber, Material, ItemDescription, DeliveredQuantity,
                  PickedQuantity, Uom, Plant, WarehouseNo, Quantity, Status, WbsElement, SalesOrderItem,
                  OriginalDeliveryNumber, OriginalDeliveryItem, ItemChangeDate, PickingStatus, PickingStatusDesc,
