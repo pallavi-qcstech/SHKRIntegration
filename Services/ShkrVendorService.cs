@@ -93,13 +93,13 @@ public sealed class ShkrVendorService(
                 {
                     await storedProcedureConnection.OpenAsync(stoppingToken);
 
-                    await using var promotionCommand = new SqlCommand("dbo.SHKR_INT_AddVendors", storedProcedureConnection)
+                    await using var promotionCommand = new SqlCommand("dbo.SHK_INT_VENDOR_IB_PRC", storedProcedureConnection)
                     {
                         CommandType = CommandType.StoredProcedure
                     };
 
                     await promotionCommand.ExecuteNonQueryAsync(stoppingToken);
-                    logger.LogInformation("SHKR_INT_AddVendors executed.");
+                    logger.LogInformation("SHK_INT_VENDOR_IB_PRC executed.");
                 }
 
                 await LogStaleStagingErrorsAsync(stoppingToken);

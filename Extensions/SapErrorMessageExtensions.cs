@@ -17,21 +17,40 @@ public static class SapErrorMessageExtensions
         {
             using var document = JsonDocument.Parse(body);
 
-            if (document.RootElement.TryGetProperty("error", out var error) &&
-                error.TryGetProperty("message", out var message) &&
-                message.TryGetProperty("value", out var value) &&
-                value.ValueKind == JsonValueKind.String)
+            if (document.RootElement.TryGetProperty("error", out var error))
             {
-                var text = value.GetString()!;
+                string? transactionId = null;
 
-                if (error.TryGetProperty("innererror", out var innerError) &&
-                    innerError.TryGetProperty("transactionid", out var transactionId) &&
-                    transactionId.ValueKind == JsonValueKind.String)
+                if (error.TryGetProperty("innererror", out var innerError))
                 {
-                    text += $" (SAP transaction {transactionId.GetString()})";
+                    if (innerError.TryGetProperty("transactionid", out var transactionIdElement) &&
+                        transactionIdElement.ValueKind == JsonValueKind.String)
+                    {
+                        transactionId = transactionIdElement.GetString();
+                    }
+
+                    // Prefer errordetails when present - some SAP services (e.g. the PR Create/Change
+                    // API) explicitly document that the top-level message is always the same generic
+                    // text ("An exception was raised"), while errordetails carries the real reason.
+                    // Falls through to the generic message below for services that don't send this.
+                    if (innerError.TryGetProperty("errordetails", out var errorDetails) &&
+                        errorDetails.ValueKind == JsonValueKind.Array &&
+                        errorDetails.GetArrayLength() > 0 &&
+                        errorDetails[0].TryGetProperty("message", out var detailMessage) &&
+                        detailMessage.ValueKind == JsonValueKind.String)
+                    {
+                        var detailText = detailMessage.GetString()!;
+                        return transactionId is null ? detailText : $"{detailText} (SAP transaction {transactionId})";
+                    }
                 }
 
-                return text;
+                if (error.TryGetProperty("message", out var message) &&
+                    message.TryGetProperty("value", out var value) &&
+                    value.ValueKind == JsonValueKind.String)
+                {
+                    var text = value.GetString()!;
+                    return transactionId is null ? text : $"{text} (SAP transaction {transactionId})";
+                }
             }
         }
         catch (JsonException)
