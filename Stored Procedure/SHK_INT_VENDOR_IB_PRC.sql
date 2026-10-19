@@ -8,7 +8,7 @@ GO
 
 
 
-CREATE OR ALTER PROC [dbo].[SHKR_INT_AddVendors]
+CREATE OR ALTER PROC [dbo].[SHK_INT_VENDOR_IB_PRC]
 AS
 SET NOCOUNT ON
 SET XACT_ABORT ON
@@ -16,11 +16,11 @@ SET XACT_ABORT ON
 BEGIN
     DECLARE @ErrorDesc   VARCHAR(MAX) = '';
     DECLARE @ErrorStatus INT = 0;
-    
+
     DECLARE @Now         DATETIME2 = GETDATE();
 
     BEGIN TRY
-     
+
         DELETE a FROM dbo.xx_vendor_stg_tbl_ib a
         WHERE a.ProcessStatus = 'E'
           AND EXISTS (SELECT 1 FROM dbo.xx_vendor_stg_tbl_ib x WHERE x.ProcessStatus = 'N' AND x.VendorID = a.VendorID);
@@ -287,7 +287,7 @@ BEGIN
 
                     SET @DestContactId = ISNULL((SELECT Id FROM dbo.CompanyAddressesContacts WHERE CompanyAdressId = @DestVendorAddressId AND Email = @ContEmail), 0);
 
-                   
+
                     IF @DestContactId <> 0
                     BEGIN
                         UPDATE dbo.CompanyAddressesContacts
