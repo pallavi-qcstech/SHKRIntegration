@@ -29,10 +29,6 @@ public static class SapErrorMessageExtensions
                         transactionId = transactionIdElement.GetString();
                     }
 
-                    // Prefer errordetails when present - some SAP services (e.g. the PR Create/Change
-                    // API) explicitly document that the top-level message is always the same generic
-                    // text ("An exception was raised"), while errordetails carries the real reason.
-                    // Falls through to the generic message below for services that don't send this.
                     if (innerError.TryGetProperty("errordetails", out var errorDetails) &&
                         errorDetails.ValueKind == JsonValueKind.Array &&
                         errorDetails.GetArrayLength() > 0 &&
