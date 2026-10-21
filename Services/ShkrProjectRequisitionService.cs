@@ -234,10 +234,15 @@ public sealed class ShkrProjectRequisitionService(
         return lines;
     }
 
+    private const int ErrorMsgMaxLength = 2000;
+
     private async Task PersistResultAsync(long hdrRecordId, ProjectRequisitionCreateResult result, CancellationToken cancellationToken)
     {
         var status = result.Success ? StatusSuccess : StatusError;
         var now = DateTime.Now;
+        var errorMsg = result.ErrorMessage is { Length: > ErrorMsgMaxLength }
+            ? result.ErrorMessage[..ErrorMsgMaxLength]
+            : result.ErrorMessage;
 
         await using var connection = new SqlConnection(_databaseOptions.ConnectionString);
         await connection.OpenAsync(cancellationToken);
@@ -252,7 +257,7 @@ public sealed class ShkrProjectRequisitionService(
         {
             headerCommand.Parameters.AddWithValue("@ProcessStatus", status);
             headerCommand.Parameters.AddWithValue("@SapPrId", (object?)result.Banfn ?? DBNull.Value);
-            headerCommand.Parameters.AddWithValue("@ErrorMsg", (object?)result.ErrorMessage ?? DBNull.Value);
+            headerCommand.Parameters.AddWithValue("@ErrorMsg", (object?)errorMsg ?? DBNull.Value);
             headerCommand.Parameters.AddWithValue("@LastUpdateDate", now);
             headerCommand.Parameters.AddWithValue("@RecordId", hdrRecordId);
             await headerCommand.ExecuteNonQueryAsync(cancellationToken);
@@ -267,7 +272,7 @@ public sealed class ShkrProjectRequisitionService(
         await using (var linesCommand = new SqlCommand(updateLinesSql, connection))
         {
             linesCommand.Parameters.AddWithValue("@ProcessStatus", status);
-            linesCommand.Parameters.AddWithValue("@ErrorMsg", (object?)result.ErrorMessage ?? DBNull.Value);
+            linesCommand.Parameters.AddWithValue("@ErrorMsg", (object?)errorMsg ?? DBNull.Value);
             linesCommand.Parameters.AddWithValue("@LastUpdateDate", now);
             linesCommand.Parameters.AddWithValue("@HdrRecordId", hdrRecordId);
             await linesCommand.ExecuteNonQueryAsync(cancellationToken);
