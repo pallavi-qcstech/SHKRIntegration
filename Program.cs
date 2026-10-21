@@ -33,7 +33,10 @@ builder.Services.AddProjects();
 builder.Services.AddWBS();
 builder.Services.AddSalesOrders();
 builder.Services.AddDeliveries();
-builder.Services.AddProjectRequisition();
+// AddProjectRequisition() has no definition on main yet, so the project does not build with it.
+// Put it back together with the Purchase Requisition API.
+// builder.Services.AddProjectRequisition();
+builder.Services.AddReservations();
 
 builder.Services.AddIntegrationHealthChecks();
 
