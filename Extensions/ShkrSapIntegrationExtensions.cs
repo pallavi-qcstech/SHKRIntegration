@@ -15,15 +15,17 @@ public static class ShkrSapIntegrationExtensions
     {
         services.Configure<ShkrSapApiOptions>(configuration.GetSection(ShkrSapApiOptions.SectionName));
         services.AddTransient<ShkrSapCsrfTokenHandler>();
+        services.AddTransient<ShkrSapRequestResponseLoggingHandler>();
         return services;
     }
 
-   
+
     public static IHttpClientBuilder AddShkrSapHttpClient(this IServiceCollection services, string clientName)
     {
         var builder = services.AddHttpClient(clientName, ConfigureShkrSapClient)
             .ConfigurePrimaryHttpMessageHandler(CreateShkrSapHandler)
-            .AddHttpMessageHandler<ShkrSapCsrfTokenHandler>();
+            .AddHttpMessageHandler<ShkrSapCsrfTokenHandler>()
+            .AddHttpMessageHandler<ShkrSapRequestResponseLoggingHandler>();
 
         builder.AddStandardResilienceHandler();
 
@@ -34,7 +36,8 @@ public static class ShkrSapIntegrationExtensions
     {
         return services.AddHttpClient(clientName, ConfigureShkrSapClient)
             .ConfigurePrimaryHttpMessageHandler(CreateShkrSapHandler)
-            .AddHttpMessageHandler<ShkrSapCsrfTokenHandler>();
+            .AddHttpMessageHandler<ShkrSapCsrfTokenHandler>()
+            .AddHttpMessageHandler<ShkrSapRequestResponseLoggingHandler>();
     }
 
     private static void ConfigureShkrSapClient(IServiceProvider sp, HttpClient client)

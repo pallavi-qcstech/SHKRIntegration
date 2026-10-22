@@ -15,6 +15,7 @@ builder.Host.UseSerilog((context, loggerConfig) =>
     loggerConfig
         .MinimumLevel.Information()
         .MinimumLevel.Override("Microsoft.AspNetCore", LogEventLevel.Warning)
+        .MinimumLevel.Override("SHKRIntegration.Handlers.ShkrSapRequestResponseLoggingHandler", LogEventLevel.Debug)
         .Enrich.FromLogContext()
         .WriteTo.Console()
         .WriteTo.File(
