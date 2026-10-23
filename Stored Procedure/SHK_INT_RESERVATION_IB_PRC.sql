@@ -24,7 +24,8 @@ It picks all new data from the staging table (process_status = N), derives the P
 
 1. pmweb_project_id  - dbo.Projects.Id where ProjectNumber = ProjectDefinition (active projects only)
 2. pmweb_material_id - dbo.Items.Id where ManufacturerNumber = Material
-3. pmweb_costcode_id - dbo.CostCodes.Id where StuffedCodes = WbsElement + '-0-0' (same rule as the sales order)
+3. pmweb_costcode_id - dbo.CostCodes.Id where StuffedCodes = WbsElement + '-0-0' (same rule as the sales order),
+                       limited to the reservation's project
 4. pmweb_wbs_id      - dbo.WBS.Id of the Activity row under the Network row in the project's WBS configuration.
                        dbo.WBS keeps "<SAP id>|<description>" in Description.
 5. A row without project, material or cost code is set to E with the reason in error_msg.
@@ -43,6 +44,9 @@ BEGIN TRY
 SET @ERROR_DESC = ''
 SET @ERROR_STATUS = 0
 
+--One transaction, so a failure part way leaves no row with half its error messages written
+BEGIN TRAN
+
 --update pmweb project id
 UPDATE s
 SET pmweb_project_id = p.Id
@@ -58,11 +62,12 @@ FROM dbo.xx_sap_reservation_details_stg_tbl_ib s, dbo.Items i
 WHERE s.Material = i.ManufacturerNumber
 AND s.process_status = 'N'
 
---update pmweb cost code id
+--update pmweb cost code id - within the reservation's own project, so the same code in another project is never picked
 UPDATE s
 SET pmweb_costcode_id = c.Id
 FROM dbo.xx_sap_reservation_details_stg_tbl_ib s, dbo.CostCodes c
 WHERE s.WbsElement + '-0-0' = c.StuffedCodes
+AND c.ProjectId = s.pmweb_project_id
 AND s.process_status = 'N'
 
 --update pmweb wbs id - the activity row under the network row, inside the project's WBS configuration
@@ -101,6 +106,8 @@ AND ISNULL(error_msg, '') <> ''
 UPDATE dbo.xx_sap_reservation_details_stg_tbl_ib
 SET process_status = 'S', error_msg = NULL, last_update_date = GETDATE()
 WHERE process_status = 'N'
+
+COMMIT TRAN
 
 END TRY
 
