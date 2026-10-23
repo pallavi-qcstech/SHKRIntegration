@@ -1,6 +1,7 @@
 using Serilog;
 using Serilog.Events;
 using SHKRIntegration.Extensions;
+using SHKRIntegration.Middleware;
 
 Log.Logger = new LoggerConfiguration()
     .WriteTo.Console()
@@ -16,6 +17,7 @@ builder.Host.UseSerilog((context, loggerConfig) =>
         .MinimumLevel.Information()
         .MinimumLevel.Override("Microsoft.AspNetCore", LogEventLevel.Warning)
         .MinimumLevel.Override("SHKRIntegration.Handlers.ShkrSapRequestResponseLoggingHandler", LogEventLevel.Debug)
+        .MinimumLevel.Override("SHKRIntegration.Middleware.ShkrRequestResponseLoggingMiddleware", LogEventLevel.Debug)
         .Enrich.FromLogContext()
         .WriteTo.Console()
         .WriteTo.File(
@@ -43,6 +45,8 @@ builder.Services.AddControllers();
 var app = builder.Build();
 
 app.UseExceptionHandler();
+
+app.UseMiddleware<ShkrRequestResponseLoggingMiddleware>();
 
 app.MapHealthChecks("/health");
 
