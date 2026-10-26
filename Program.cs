@@ -37,6 +37,7 @@ builder.Services.AddWBS();
 builder.Services.AddSalesOrders();
 builder.Services.AddDeliveries();
 builder.Services.AddProjectRequisition();
+builder.Services.AddPurchaseOrder();
 
 builder.Services.AddIntegrationHealthChecks();
 

@@ -1,7 +1,7 @@
 USE [PMWeb]
 GO
 
-/****** Object:  StoredProcedure [dbo].[SHK_INT_SAPCOSTCODE_IB_PRC]    Script Date: 10/16/2026 3:16:42 PM ******/
+/****** Object:  StoredProcedure [dbo].[SHK_INT_SAPCOSTCODE_IB_PRC]    Script Date: 10/26/2026 11:03:08 AM ******/
 SET ANSI_NULLS ON
 GO
 
@@ -68,6 +68,7 @@ DECLARE
 ,@L2_costcodegoupdetid bigint
 ,@L3_costcodegoupdetid bigint
 ,@L2_detailnumber nvarchar(10)
+,@order_type int
 
 ,@ErrorNumber     BIGINT
 ,@ErrorProcedure  NVARCHAR(200)
@@ -148,6 +149,11 @@ AND g.GroupNumber = 3
 AND g.id = d.CostCodeGroupId
 AND d.DetailNumber = a.sap_stripped_wbs
 
+---Update cost code process status of WBS and Activity lines to S, as no cost code is created for them, only WBS
+UPDATE xx_sap_costcode_stg_tbl_ib 
+SET process_status='S'
+WHERE wbs_type in ('Network','Activity')
+
 print 'Start processing for all root level where there is no parent WBS, this means PMWeb level=project code'
 ----------------------------------------------------------------------------------------
 --Start processing for all root level where there is no parent WBS, this means PMWeb level=project code
@@ -227,8 +233,8 @@ BEGIN TRY
 
 			IF @pmweb_costcodegroupid > 0 
 				BEGIN
-					INSERT INTO dbo.CostCodeGroupDetails(costcodegroupid,detailnumber,Description)
-					VALUES (@pmweb_costcodegroupid,@project_code,@project_name)
+					INSERT INTO dbo.CostCodeGroupDetails(costcodegroupid,detailnumber,Description,Text1)
+					VALUES (@pmweb_costcodegroupid,@project_code,@project_name,@project_code)
 
 					SET @L1_costcodegoupdetid = SCOPE_IDENTITY()
 				END
@@ -267,8 +273,8 @@ BEGIN TRY
 			END
 
 			---Add the default value cost codes
-			INSERT INTO dbo.CostCodes(ProjectId,Description,GLAccountId,Inactive)
-			VALUES (@project_id,@project_name,0,0)
+			INSERT INTO dbo.CostCodes(ProjectId,Description,GLAccountId,Inactive,Notes)
+			VALUES (@project_id,@project_name,0,0,@project_code)
 
 			SET @pmweb_costcode_id = SCOPE_IDENTITY()
 
@@ -326,6 +332,14 @@ BEGIN CATCH
 		AND process_status = 'N'
 
 	
+	FETCH NEXT FROM cc_cursor INTO @record_id
+					,@project_id,@project_code,@project_name,@pmweb_max_level
+					,@sap_wbs
+					,@sap_wbs_desc
+					,@parent_wbs
+					,@sap_stripped_wbs
+					,@wbs_type
+
 END CATCH
 
 CLOSE cc_cursor;     
@@ -393,7 +407,7 @@ BEGIN TRY
 	print 'existing @pmweb_costcodegroupdetailid = ' print @pmweb_costcodegroupdetailid
 	IF @pmweb_costcodegroupdetailid > 0 -- Level value already exists, update description
 		BEGIN
-			UPDATE dbo.CostCodeGroupDetails SET Description = @sap_wbs_desc WHERE id = @pmweb_costcodegroupdetailid
+			UPDATE dbo.CostCodeGroupDetails SET Description = @sap_wbs_desc,Text1=@sap_wbs WHERE id = @pmweb_costcodegroupdetailid
 
 			UPDATE dbo.xx_sap_costcode_stg_tbl_ib
 			SET process_status     = 'S',
@@ -409,15 +423,15 @@ BEGIN TRY
 	--Level value does not exist, add level  value
 		BEGIN
 			print 'Inserting L2 for sap_wbs = ' print @sap_wbs	
-			INSERT INTO dbo.CostCodeGroupDetails(costcodegroupid,detailnumber,Description)
-			VALUES (@pmweb_costcodegroupid,@sap_stripped_wbs,@sap_wbs_desc)
+			INSERT INTO dbo.CostCodeGroupDetails(costcodegroupid,detailnumber,Description,Text1)
+			VALUES (@pmweb_costcodegroupid,@sap_stripped_wbs,@sap_wbs_desc,@sap_wbs)
 
 			SET @L2_costcodegoupdetid = (SELECT SCOPE_IDENTITY()) --Get the id of the new level 3 cost code inserted 
 			print '@L2_costcodegoupdetid=' print @L2_costcodegoupdetid
 
 			---Insert the L1 and L2 combination in cost code table
-			INSERT INTO dbo.CostCodes(ProjectId,Description,GLAccountId,Inactive)
-			VALUES (@project_id,@sap_wbs_desc,0,0)
+			INSERT INTO dbo.CostCodes(ProjectId,Description,GLAccountId,Inactive,Notes)
+			VALUES (@project_id,@sap_wbs_desc,0,0,@sap_wbs)
 
 			SET @pmweb_costcode_id = SCOPE_IDENTITY()
 			print '@pmweb_costcode_id=' print @pmweb_costcode_id
@@ -490,6 +504,14 @@ BEGIN CATCH
 	WHERE project_code = @project_code
 	AND record_id = @record_id
 
+	FETCH NEXT FROM cc_cursor INTO @record_id
+					,@project_id,@project_code,@project_name,@pmweb_max_level
+					,@sap_wbs
+					,@sap_wbs_desc
+					,@parent_wbs
+					,@sap_stripped_wbs
+					,@wbs_type
+					,@L1_costcodegoupdetid
 	
 END CATCH
 
@@ -575,7 +597,7 @@ BEGIN TRY
 	print 'exising @pmweb_costcodegroupdetailid = ' print @pmweb_costcodegroupdetailid
 	IF @pmweb_costcodegroupdetailid > 0 -- Level value already exists, update description
 		BEGIN
-			UPDATE dbo.CostCodeGroupDetails SET Description = @sap_wbs_desc WHERE id = @pmweb_costcodegroupdetailid
+			UPDATE dbo.CostCodeGroupDetails SET Description = @sap_wbs_desc,Text1=@sap_wbs WHERE id = @pmweb_costcodegroupdetailid
 
 			UPDATE dbo.xx_sap_costcode_stg_tbl_ib
 			SET process_status     = 'S',
@@ -591,8 +613,8 @@ BEGIN TRY
 	--Level value does not exist, add level  value
 		BEGIN
 			print 'insertinf L3 for sap_wbs = ' print @sap_wbs	
-			INSERT INTO dbo.CostCodeGroupDetails(costcodegroupid,detailnumber,Description)
-			VALUES (@pmweb_costcodegroupid,@sap_stripped_wbs,@sap_wbs_desc)
+			INSERT INTO dbo.CostCodeGroupDetails(costcodegroupid,detailnumber,Description,Text1)
+			VALUES (@pmweb_costcodegroupid,@sap_stripped_wbs,@sap_wbs_desc,@sap_wbs)
 
 			SET @L3_costcodegoupdetid = (SELECT SCOPE_IDENTITY()) --Get the id of the new level 3 cost code inserted 
 			print '@L3_costcodegoupdetid' print @L3_costcodegoupdetid
@@ -600,8 +622,8 @@ BEGIN TRY
 			print '@L2_costcodegoupdetid' print @L2_costcodegoupdetid
 
 			---Insert the L1 and L2 combination in cost code table
-			INSERT INTO dbo.CostCodes(ProjectId,Description,GLAccountId,Inactive)
-			VALUES (@project_id,@sap_wbs_desc,0,0)
+			INSERT INTO dbo.CostCodes(ProjectId,Description,GLAccountId,Inactive,Notes)
+			VALUES (@project_id,@sap_wbs_desc,0,0,@sap_wbs)
 
 			SET @pmweb_costcode_id = SCOPE_IDENTITY()
 			print '@@pmweb_costcode_id' print @pmweb_costcode_id
@@ -661,6 +683,15 @@ BEGIN CATCH
 	WHERE project_code = @project_code
 	AND record_id = @record_id
 
+	FETCH NEXT FROM cc_cursor INTO @record_id
+				,@project_id,@project_code,@project_name,@pmweb_max_level
+				,@sap_wbs
+				,@sap_wbs_desc
+				,@parent_wbs
+				,@sap_stripped_wbs
+				,@wbs_type
+				,@L1_costcodegoupdetid
+				,@L2_costcodegoupdetid
 	
 END CATCH
 
@@ -762,7 +793,8 @@ UPDATE s
     WHERE s.process_status_wbs = 'N'
       AND (NULLIF(s.parent_wbs, 'NULL') IS NULL OR ph.pmweb_wbs_id IS NOT NULL);
 
-		
+print ('Update the pmweb id if the WBS already exists')	
+print @@rowcount
 
 IF CURSOR_STATUS('global','wbs_cursor')>=-1  
 	BEGIN  
@@ -776,11 +808,15 @@ select 	record_id,project_id
 	,sap_wbs_name
 	,parent_wbs
 	,pmweb_wbs_config_id
+	,case when wbs_type = 'WBS Element' then 1
+		when wbs_type = 'Network' then 2
+		else 3
+	end order_type
 from xx_sap_costcode_stg_tbl_ib a
 where process_status_wbs in ('N') 
 and isnull(parent_wbs,'X') <> 'X'
 AND ISNULL(pmweb_wbs_id,0) = 0
-order by project_id,record_id
+order by project_id,order_type,parent_wbs
 
 OPEN wbs_cursor
 
@@ -790,6 +826,7 @@ FETCH NEXT FROM wbs_cursor INTO @record_id
 					,@sap_wbs_desc
 					,@parent_wbs
 					,@wbs_config_id
+					,@order_type
 
 WHILE @@FETCH_STATUS = 0
 BEGIN
@@ -843,6 +880,7 @@ FETCH NEXT FROM wbs_cursor INTO @record_id
 					,@sap_wbs_desc
 					,@parent_wbs
 					,@wbs_config_id
+					,@order_type
 END
 
 CLOSE wbs_cursor;     
@@ -869,6 +907,14 @@ BEGIN CATCH
 
 	INSERT INTO dbo.xx_int_ErrorLog (ErrorNumber,  ErrorProcedure, ErrorLine, ErrorMessage, TranId, ErrorDate,ErrorDesc)
 	VALUES (@ErrorNumber, @ErrorProcedure, @ErrorLine, @ErrorMessage, @record_id, GETDATE(),@ErrorDesc);
+
+	FETCH NEXT FROM wbs_cursor INTO @record_id
+					,@project_id
+					,@sap_wbs
+					,@sap_wbs_desc
+					,@parent_wbs
+					,@wbs_config_id
+					,@order_type
 END CATCH
 
 
