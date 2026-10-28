@@ -5,7 +5,7 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <UserSecretsId>16ad3cb0-aa22-4ce7-8e00-f3e061d95956</UserSecretsId>
-    <DefaultItemExcludes>$(DefaultItemExcludes);publish/**;Stored Procedure/**</DefaultItemExcludes>
+    <DefaultItemExcludes>$(DefaultItemExcludes);publish/**;Stored Procedure/**;Tables/**</DefaultItemExcludes>
   </PropertyGroup>
 
   <ItemGroup>

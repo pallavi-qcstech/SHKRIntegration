@@ -38,6 +38,7 @@ builder.Services.AddSalesOrders();
 builder.Services.AddDeliveries();
 builder.Services.AddProjectRequisition();
 builder.Services.AddPurchaseOrder();
+builder.Services.AddReservations();
 
 builder.Services.AddIntegrationHealthChecks();
 
