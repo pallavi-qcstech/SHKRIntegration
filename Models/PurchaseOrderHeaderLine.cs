@@ -33,4 +33,7 @@ public sealed class PurchaseOrderLine
     public string? Network { get; set; }
     public string? Activity { get; set; }
     public string? ItemCat { get; set; }
+    public string? PreqNo { get; set; }
+    public string? PreqItem { get; set; }
+    public string? DeliveryDate { get; set; }
 }

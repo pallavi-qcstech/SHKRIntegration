@@ -80,19 +80,32 @@ public sealed class ShkrPurchaseOrderService(
 
         foreach (var line in lines)
         {
+            var quantity = FormatDecimal(line.Quantity, "0.000");
+
             request.PoItemSet.Add(new PoItemSetItem
             {
                 PoItem = line.PoItem ?? string.Empty,
                 ShortText = line.ShortText ?? string.Empty,
                 Plant = line.Plant ?? string.Empty,
                 MatlGroup = line.MatGrp ?? string.Empty,
-                Quantity = FormatDecimal(line.Quantity, "0.000"),
+                Quantity = quantity,
                 PoUnit = line.PoUnit ?? string.Empty,
                 NetPrice = FormatDecimal(line.NetPrice, "0.00"),
                 PriceUnit = line.PriceUnit ?? string.Empty,
                 TaxCode = line.TaxCode ?? string.Empty,
                 AcctAssCat = line.AcctAssCat ?? string.Empty,
                 ItemCat = line.ItemCat ?? string.Empty,
+                PreqItem = line.PreqItem ?? string.Empty,
+                PreqNo = line.PreqNo ?? string.Empty,
+            });
+
+            // One schedule line per item, delivering the full item quantity.
+            request.PoSchedSet.Add(new PoSchedSetItem
+            {
+                PoItem = line.PoItem ?? string.Empty,
+                SchedLine = "0001",
+                DeliveryDate = line.DeliveryDate ?? string.Empty,
+                Quantity = quantity,
             });
 
             request.PoAccountSet.Add(new PoAccountSetItem
@@ -184,7 +197,7 @@ public sealed class ShkrPurchaseOrderService(
             SELECT
                 record_id, hdr_record_id, po_item, short_text, mat_grp, plant, quantity, po_unit,
                 net_price, price_unit, tax_code, acctasscat, wbs_element, gl_account, co_area,
-                network, activity, item_cat
+                network, activity, item_cat, preq_no, preq_item, delivery_date
             FROM dbo.xx_purchaseorder_line_stg_tbl_ob
             WHERE hdr_record_id = @HdrRecordId
             ORDER BY record_id ASC
@@ -220,6 +233,9 @@ public sealed class ShkrPurchaseOrderService(
                 Network = GetString(reader, "network"),
                 Activity = GetString(reader, "activity"),
                 ItemCat = GetString(reader, "item_cat"),
+                PreqNo = GetString(reader, "preq_no"),
+                PreqItem = GetString(reader, "preq_item"),
+                DeliveryDate = GetString(reader, "delivery_date"),
             });
         }
 

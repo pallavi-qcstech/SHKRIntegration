@@ -13,7 +13,7 @@ public sealed class CreatePurchaseOrderRequest
     [JsonPropertyName("Currency")] public string Currency { get; set; } = string.Empty;
     [JsonPropertyName("DocDate")] public string DocDate { get; set; } = string.Empty;
     [JsonPropertyName("POITEMSet")] public List<PoItemSetItem> PoItemSet { get; set; } = [];
-    [JsonPropertyName("POSCHEDSet")] public List<object> PoSchedSet { get; set; } = [];
+    [JsonPropertyName("POSCHEDSet")] public List<PoSchedSetItem> PoSchedSet { get; set; } = [];
     [JsonPropertyName("POACCOUNTSet")] public List<PoAccountSetItem> PoAccountSet { get; set; } = [];
     [JsonPropertyName("POSRVSet")] public List<object> PoSrvSet { get; set; } = [];
     [JsonPropertyName("POSRVVALSet")] public List<object> PoSrvValSet { get; set; } = [];
@@ -32,6 +32,16 @@ public sealed class PoItemSetItem
     [JsonPropertyName("TaxCode")] public string TaxCode { get; set; } = string.Empty;
     [JsonPropertyName("Acctasscat")] public string AcctAssCat { get; set; } = string.Empty;
     [JsonPropertyName("ItemCat")] public string ItemCat { get; set; } = string.Empty;
+    [JsonPropertyName("PreqItem")] public string PreqItem { get; set; } = string.Empty;
+    [JsonPropertyName("PreqNo")] public string PreqNo { get; set; } = string.Empty;
+}
+
+public sealed class PoSchedSetItem
+{
+    [JsonPropertyName("PoItem")] public string PoItem { get; set; } = string.Empty;
+    [JsonPropertyName("SchedLine")] public string SchedLine { get; set; } = string.Empty;
+    [JsonPropertyName("DeliveryDate")] public string DeliveryDate { get; set; } = string.Empty;
+    [JsonPropertyName("Quantity")] public string Quantity { get; set; } = string.Empty;
 }
 
 public sealed class PoAccountSetItem
