@@ -4,7 +4,6 @@ namespace SHKRIntegration.Models;
 
 public sealed class CreatePurchaseOrderRequest
 {
-    [JsonPropertyName("PoNumber")] public string PoNumber { get; set; } = string.Empty;
     [JsonPropertyName("CompCode")] public string CompCode { get; set; } = string.Empty;
     [JsonPropertyName("DocType")] public string DocType { get; set; } = string.Empty;
     [JsonPropertyName("Vendor")] public string Vendor { get; set; } = string.Empty;
@@ -15,8 +14,6 @@ public sealed class CreatePurchaseOrderRequest
     [JsonPropertyName("POITEMSet")] public List<PoItemSetItem> PoItemSet { get; set; } = [];
     [JsonPropertyName("POSCHEDSet")] public List<PoSchedSetItem> PoSchedSet { get; set; } = [];
     [JsonPropertyName("POACCOUNTSet")] public List<PoAccountSetItem> PoAccountSet { get; set; } = [];
-    [JsonPropertyName("POSRVSet")] public List<object> PoSrvSet { get; set; } = [];
-    [JsonPropertyName("POSRVVALSet")] public List<object> PoSrvValSet { get; set; } = [];
 }
 
 public sealed class PoItemSetItem
@@ -31,7 +28,6 @@ public sealed class PoItemSetItem
     [JsonPropertyName("PriceUnit")] public string PriceUnit { get; set; } = string.Empty;
     [JsonPropertyName("TaxCode")] public string TaxCode { get; set; } = string.Empty;
     [JsonPropertyName("Acctasscat")] public string AcctAssCat { get; set; } = string.Empty;
-    [JsonPropertyName("ItemCat")] public string ItemCat { get; set; } = string.Empty;
     [JsonPropertyName("PreqItem")] public string PreqItem { get; set; } = string.Empty;
     [JsonPropertyName("PreqNo")] public string PreqNo { get; set; } = string.Empty;
 }
@@ -50,7 +46,4 @@ public sealed class PoAccountSetItem
     [JsonPropertyName("SerialNo")] public string SerialNo { get; set; } = string.Empty;
     [JsonPropertyName("GlAccount")] public string GlAccount { get; set; } = string.Empty;
     [JsonPropertyName("WbsElement")] public string WbsElement { get; set; } = string.Empty;
-    [JsonPropertyName("Network")] public string Network { get; set; } = string.Empty;
-    [JsonPropertyName("Activity")] public string Activity { get; set; } = string.Empty;
-    [JsonPropertyName("CoArea")] public string CoArea { get; set; } = string.Empty;
 }

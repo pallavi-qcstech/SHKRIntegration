@@ -68,7 +68,6 @@ public sealed class ShkrPurchaseOrderService(
     {
         var request = new CreatePurchaseOrderRequest
         {
-            PoNumber = string.Empty,
             CompCode = header.CompCode ?? string.Empty,
             DocType = header.DocType ?? string.Empty,
             Vendor = header.Vendor ?? string.Empty,
@@ -94,7 +93,6 @@ public sealed class ShkrPurchaseOrderService(
                 PriceUnit = line.PriceUnit ?? string.Empty,
                 TaxCode = line.TaxCode ?? string.Empty,
                 AcctAssCat = line.AcctAssCat ?? string.Empty,
-                ItemCat = line.ItemCat ?? string.Empty,
                 PreqItem = line.PreqItem ?? string.Empty,
                 PreqNo = line.PreqNo ?? string.Empty,
             });
@@ -114,9 +112,6 @@ public sealed class ShkrPurchaseOrderService(
                 SerialNo = "01",
                 GlAccount = line.GlAccount ?? string.Empty,
                 WbsElement = line.WbsElement ?? string.Empty,
-                Network = line.Network ?? string.Empty,
-                Activity = line.Activity ?? string.Empty,
-                CoArea = line.CoArea ?? string.Empty,
             });
         }
 
