@@ -54,6 +54,27 @@ app.MapHealthChecks("/health");
 
 app.MapControllers();
 
+// Startup/shutdown markers, so each deployment and app-pool recycle is visible in the log file
+// (IIS does not write the framework's "Application started" lines).
+app.Lifetime.ApplicationStarted.Register(() =>
+{
+    var entryAssembly = System.Reflection.Assembly.GetEntryAssembly();
+    var version = entryAssembly?
+        .GetCustomAttributes(typeof(System.Reflection.AssemblyInformationalVersionAttribute), false)
+        .OfType<System.Reflection.AssemblyInformationalVersionAttribute>()
+        .FirstOrDefault()?.InformationalVersion ?? "unknown";
+    var buildTime = string.IsNullOrEmpty(entryAssembly?.Location)
+        ? "unknown"
+        : File.GetLastWriteTime(entryAssembly.Location).ToString("yyyy-MM-dd HH:mm:ss");
+
+    Log.Information(
+        "SHKRIntegration started - Environment: {Environment}, Version: {Version}, Build: {BuildTime}, ProcessId: {ProcessId}, ContentRoot: {ContentRoot}",
+        app.Environment.EnvironmentName, version, buildTime, Environment.ProcessId, app.Environment.ContentRootPath);
+});
+
+app.Lifetime.ApplicationStopping.Register(() =>
+    Log.Information("SHKRIntegration stopping - ProcessId: {ProcessId}", Environment.ProcessId));
+
 try
 {
     app.Run();
