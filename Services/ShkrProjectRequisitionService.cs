@@ -47,7 +47,7 @@ public sealed class ShkrProjectRequisitionService(
 
             var result = await SendToSapAsync(request, cancellationToken);
 
-            await PersistResultAsync(header.RecordId, result, cancellationToken);
+            await PersistResultAsync(header.RecordId, result, lines, cancellationToken);
 
             logger.LogInformation(
                 "Project Requisition create (header record_id={RecordId}) completed: Success={Success}, Banfn={Banfn}.",
@@ -58,7 +58,7 @@ public sealed class ShkrProjectRequisitionService(
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             logger.LogError(ex, "Project Requisition create failed for header record_id {RecordId}.", header.RecordId);
-            await PersistResultAsync(header.RecordId, new ProjectRequisitionCreateResult(false, null, ex.Message), cancellationToken);
+            await PersistResultAsync(header.RecordId, new ProjectRequisitionCreateResult(false, null, ex.Message), lines, cancellationToken);
             throw;
         }
     }
@@ -146,7 +146,9 @@ public sealed class ShkrProjectRequisitionService(
             throw new InvalidOperationException("SAP Z_PR_CREATION_SRV returned 201 but no BANFN in the response body.");
         }
 
-        return new ProjectRequisitionCreateResult(true, envelope.D.Banfn, null);
+        var confirmedLineItems = envelope.D.PrHeaderSet.Results.Select(r => r.PreqItem).ToList();
+
+        return new ProjectRequisitionCreateResult(true, envelope.D.Banfn, null, confirmedLineItems);
     }
 
     private async Task<ProjectRequisitionHeader?> GetHeaderAsync(long recordId, CancellationToken cancellationToken)
@@ -236,7 +238,8 @@ public sealed class ShkrProjectRequisitionService(
 
     private const int ErrorMsgMaxLength = 2000;
 
-    private async Task PersistResultAsync(long hdrRecordId, ProjectRequisitionCreateResult result, CancellationToken cancellationToken)
+    private async Task PersistResultAsync(
+        long hdrRecordId, ProjectRequisitionCreateResult result, List<ProjectRequisitionLine> lines, CancellationToken cancellationToken)
     {
         var status = result.Success ? StatusSuccess : StatusError;
         var now = DateTime.Now;
@@ -276,6 +279,32 @@ public sealed class ShkrProjectRequisitionService(
             linesCommand.Parameters.AddWithValue("@LastUpdateDate", now);
             linesCommand.Parameters.AddWithValue("@HdrRecordId", hdrRecordId);
             await linesCommand.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        if (result is { Success: true, ConfirmedLineItems: { Count: > 0 } confirmedLineItems })
+        {
+            if (confirmedLineItems.Count != lines.Count)
+            {
+                logger.LogWarning(
+                    "SAP returned {ResponseCount} PRHEADERSet line(s) but {SentCount} were sent for header record_id={RecordId}; skipping line-level PREQ_ITEM confirmation.",
+                    confirmedLineItems.Count, lines.Count, hdrRecordId);
+            }
+            else
+            {
+                const string updateLineItemSql = """
+                    UPDATE dbo.xx_projectrequisition_line_stg_tbl_ob
+                    SET prebid_line_no = @PrebidLineNo
+                    WHERE record_id = @RecordId
+                    """;
+
+                for (var i = 0; i < lines.Count; i++)
+                {
+                    await using var lineItemCommand = new SqlCommand(updateLineItemSql, connection);
+                    lineItemCommand.Parameters.AddWithValue("@PrebidLineNo", confirmedLineItems[i]);
+                    lineItemCommand.Parameters.AddWithValue("@RecordId", lines[i].RecordId);
+                    await lineItemCommand.ExecuteNonQueryAsync(cancellationToken);
+                }
+            }
         }
     }
 

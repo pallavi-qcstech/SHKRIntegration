@@ -14,10 +14,16 @@ pushes it to SAP's Z_PR_CREATION_SRV OData service to create a real Project Requ
 Change Log
 23/10/26 - Pallavi M - New procedure
 28/10/26 - Pallavi M - Account assignment validation: each line must be either WBS element only
-                       or Network + Activity only (ACCTASSCAT always 'P'), else rejected (RETURN -8).
+                       or Network + Activity only (ACCTASSCAT always 'P'), else rejected .
                        A line with both CostCode and WBSId follows the WBS.
-
+28/10/26 - Pallavi M - WBSId = 0 means no WBS selected , so the line takes the WBS element (CostCodes.Notes) path.
+29/10/26 - Pallavi M - SAP PR number also written to dbo.Specifications ('Integration Reference',
+                       template 45, EntityTypeId 244) so it shows on the PreBid screen.
+02/11/26 - Pallavi M - Line-level Estimate_PreBidDetails.MfrNumber write-back added the item number
+                       from SAP's PR response payload ,so PO can later link a Commitment line back
+                       to its PR line.
 */
+
 ALTER PROC [dbo].[SHK_INT_PROJECTREQUISITION_OB_PRC]
     @TRAN_ID BIGINT   -- dbo.Estimate_PreBids.Id
 AS
@@ -221,7 +227,7 @@ BEGIN
             SELECT 1
             FROM dbo.Estimate_PreBidDetails d
             WHERE d.PreBidId = @TRAN_ID
-              AND d.WBSId IS NOT NULL
+              AND NULLIF(d.WBSId, 0) IS NOT NULL
               AND EXISTS (SELECT 1 FROM dbo.WBS c WHERE c.ParentId = d.WBSId)
         )
         BEGIN
@@ -259,20 +265,22 @@ BEGIN
         END
 
         ;WITH WbsCode AS (
+            -- SAP code now is taken from Code directly per SHK_INT_SAPCOSTCODE_IB_PRC procedure
             SELECT w.Id, w.ParentId,
-                ResolvedCode = LEFT(w.Description, NULLIF(CHARINDEX('|', w.Description), 0) - 1)
+                ResolvedCode = w.Code
             FROM dbo.WBS w
         )
         INSERT INTO dbo.xx_projectrequisition_line_stg_tbl_ob
-            (hdr_record_id, tracking_no, prebid_id, prebid_line_no, doc_type, short_text, material, mat_grp,
+            (hdr_record_id, tracking_no, prebid_id, prebid_detail_id, prebid_line_no, doc_type, short_text, material, mat_grp,
              plant, pur_group, quantity, uom, prebid_date, rel_date, deliv_date, item_cat,
              acctasscat, prebid_amount, price_unit, currency, prebid_no, serial_no,
              wbs_element, network, activity, proj_ext, gl_acct, co_area,
              process_status, operation_flag, creation_date, last_update_date)
         SELECT
             @hdr_record_id,
-            pb.PreBidNumber,   
-            pb.Id,             
+            pb.PreBidNumber,
+            pb.Id,
+            d.Id,              -- prebid_detail_id: the exact line this row is staged from (for the MfrNumber write-back)
             RIGHT('00000' + CAST(ROW_NUMBER() OVER (ORDER BY d.LineNumber) * 10 AS VARCHAR(5)), 5),
             pgm.SpecField5,
             LEFT(pb.Description, 40),
@@ -295,9 +303,9 @@ BEGIN
             --  a line with a WBSId is sent as Network + Activity only and its
             -- CostCodeId is ignored, even when both are filled. A line without a WBSId is sent as WBS
             -- element only (CostCodes.Notes).
-            CASE WHEN d.WBSId IS NULL THEN wbsres.ResolvedWbsElement ELSE '' END,
-            CASE WHEN d.WBSId IS NOT NULL THEN ISNULL(wbsnet.ResolvedNetwork, '') ELSE '' END,
-            CASE WHEN d.WBSId IS NOT NULL THEN ISNULL(wbsnet.ResolvedActivity, '') ELSE '' END,
+            CASE WHEN NULLIF(d.WBSId, 0) IS NULL THEN wbsres.ResolvedWbsElement ELSE '' END,
+            CASE WHEN NULLIF(d.WBSId, 0) IS NOT NULL THEN ISNULL(wbsnet.ResolvedNetwork, '') ELSE '' END,
+            CASE WHEN NULLIF(d.WBSId, 0) IS NOT NULL THEN ISNULL(wbsnet.ResolvedActivity, '') ELSE '' END,
             '',
             pgm.SpecField6,
             '1000',
@@ -500,7 +508,7 @@ BEGIN
         ----   1) WBS element only       - WBSId blank, CostCodes.Notes has the SAP WBS element
         ----   2) Network + Activity only - WBSId is an Activity under a 12-digit Network
         ---- Anything else (all blank, Network without Activity, Activity without Network)
-        ---- is rejected here before calling SAP.
+        ---- is rejected here before calling SAP.[TBC]
 
         SET @bad_acct_lines = STUFF((
             SELECT ', ' + ISNULL(l.prebid_line_no, '?') + ' (' +
@@ -585,11 +593,30 @@ BEGIN
             SET status = 'S', error_msg = 'Project Requisition created successfully, SAP PR ' + @sap_pr_id, last_update_date = GETDATE()
             WHERE tran_id = @TRAN_ID AND tran_type = @txn_type;
 
-            -- Write the SAP-assigned PR number (BANFN) back into the PMWeb source entity, header
-            -- level only for now (line-level deferred as it is not sent back)
+            -- Write the SAP-assigned PR number (BANFN) back into the PMWeb source entity, header level
             UPDATE dbo.Estimate_PreBids
             SET SpecField4 = @sap_pr_id
             WHERE Id = @TRAN_ID;
+
+            -- Line level: MfrNumber = the item number from SAP's PR response payload (PREQ_ITEM, e.g.
+            -- '00010') - ShkrProjectRequisitionService overwrites prebid_line_no with the confirmed
+            -- response value before this runs, so this reads the response.
+            UPDATE pbd
+            SET pbd.MfrNumber = l.prebid_line_no
+            FROM dbo.Estimate_PreBidDetails pbd
+            JOIN dbo.xx_projectrequisition_line_stg_tbl_ob l ON l.prebid_detail_id = pbd.Id
+            WHERE l.hdr_record_id = @hdr_record_id;
+
+            -- The PreBid screen shows 'Integration Reference' (template 45, field 4) from
+            -- dbo.Specifications.
+            IF EXISTS (SELECT 1 FROM dbo.Specifications
+                       WHERE EntityTypeId = 244 AND EntityId = @TRAN_ID AND SpecificationTemplateId = 45)
+                UPDATE dbo.Specifications
+                SET Measure = @sap_pr_id
+                WHERE EntityTypeId = 244 AND EntityId = @TRAN_ID AND SpecificationTemplateId = 45;
+            ELSE
+                INSERT INTO dbo.Specifications (EntityTypeId, EntityId, SpecificationTemplateId, Measure, Notes, ListItemId)
+                VALUES (244, @TRAN_ID, 45, @sap_pr_id, '', -1);
 
             IF @DocumentId IS NOT NULL
             BEGIN
@@ -651,20 +678,136 @@ BEGIN
 
     END TRY
     BEGIN CATCH
-        SET @ERROR_DESC = ERROR_MESSAGE();
+        SET @ErrorNumber = ERROR_NUMBER();
+        SET @ErrorProcedure = ERROR_PROCEDURE();
+        SET @ErrorLine = ERROR_LINE();
+        SET @ErrorMessage = ERROR_MESSAGE();
+        SET @ErrorDesc = 'Unexpected exception in PR procedure';
+        SET @ERROR_DESC = @ErrorDesc + ': ' + @ErrorMessage;
 
+        INSERT INTO dbo.xx_int_ErrorLog (ErrorNumber, ErrorProcedure, ErrorLine, ErrorMessage, TranId, ErrorDate, ErrorDesc)
+        VALUES (@ErrorNumber, @ErrorProcedure, @ErrorLine, @ErrorMessage, CAST(@TRAN_ID AS VARCHAR(100)), GETDATE(), @ErrorDesc);
+
+        -- Re-read from staging: the error may have happened after SAP created the PR
         IF @hdr_record_id > 0
-        BEGIN
-            UPDATE dbo.xx_projectrequisition_hdr_stg_tbl_ob
-            SET process_status = 'E', error_msg = @ERROR_DESC, last_update_date = GETDATE()
+            SELECT @sap_pr_id = NULLIF(LTRIM(RTRIM(sap_pr_id)), '')
+            FROM dbo.xx_projectrequisition_hdr_stg_tbl_ob
             WHERE record_id = @hdr_record_id;
 
-            UPDATE dbo.xx_projectrequisition_line_stg_tbl_ob
-            SET process_status = 'E', error_msg = @ERROR_DESC, last_update_date = GETDATE()
-            WHERE hdr_record_id = @hdr_record_id;
+        IF @sap_pr_id IS NULL
+        BEGIN
+            -- No PR in SAP: same handling as the other errors, back to the submitter
+            IF @hdr_record_id > 0
+            BEGIN
+                UPDATE dbo.xx_projectrequisition_hdr_stg_tbl_ob
+                SET process_status = 'E', error_msg = LEFT(@ERROR_DESC, 2000), last_update_date = GETDATE()
+                WHERE record_id = @hdr_record_id;
+
+                UPDATE dbo.xx_projectrequisition_line_stg_tbl_ob
+                SET process_status = 'E', error_msg = LEFT(@ERROR_DESC, 2000), last_update_date = GETDATE()
+                WHERE hdr_record_id = @hdr_record_id;
+            END
+
+            UPDATE dbo.xx_integration_tbl
+            SET status = 'E', error_msg = @ERROR_DESC, last_update_date = GETDATE()
+            WHERE tran_id = @TRAN_ID AND tran_type = @txn_type;
+
+            IF @DocumentId IS NOT NULL AND @PrevStepId IS NOT NULL
+            BEGIN
+                EXEC dbo.Workflow_ExecuteDocumentAction
+                    @StepActionGUID = '00000000-0000-0000-0000-000000000000'
+                    ,@ActionTypeId = 3
+                    ,@DeliveredToStepId = @PrevStepId
+                    ,@DelegateToIds = N'0'
+                    ,@TeamInputIds = N'0'
+                    ,@DocumentId = @DocumentId
+                    ,@ActionComment = @ERROR_DESC
+                    ,@UserId = 5
+                    ,@TeamInputCanEditRecord = 0
+                    ,@TeamInputCanEditNotes = 0
+                    ,@TeamInputCanEditAttachments = 0
+                    ,@ActionSource = N'Website';
+
+                EXEC dbo.Workflow_CalculateCurrentPendingStepId @DocumentId = @DocumentId;
+                EXEC dbo.Workflow_UpdateDocumentCurrentPendingStepId @DocumentId = @DocumentId, @CurrentPendingStepId = @PrevStepId;
+                EXEC dbo.Workflow_RecalculateDueDate @DocumentId = @DocumentId;
+            END
+
+            SELECT @ERROR_DESC AS Message;
+            RETURN -9;
         END
 
-        SELECT @ERROR_DESC AS Message;
+        -- PR already created in SAP: finish the success steps that the error interrupted
+        -- (never send it back - a resubmit would create a second PR in SAP)
+        BEGIN TRY
+            UPDATE dbo.xx_integration_tbl
+            SET status = 'S', error_msg = 'Project Requisition created successfully, SAP PR ' + @sap_pr_id
+                + ' (completed after error: ' + @ErrorMessage + ')', last_update_date = GETDATE()
+            WHERE tran_id = @TRAN_ID AND tran_type = @txn_type;
+
+            UPDATE dbo.Estimate_PreBids
+            SET SpecField4 = @sap_pr_id
+            WHERE Id = @TRAN_ID;
+
+            -- Same line-level MfrNumber write as the main success path above - a PR that succeeded in
+            -- SAP but hit a later error must still get its line references completed. 
+            UPDATE pbd
+            SET pbd.MfrNumber = l.prebid_line_no
+            FROM dbo.Estimate_PreBidDetails pbd
+            JOIN dbo.xx_projectrequisition_line_stg_tbl_ob l ON l.prebid_detail_id = pbd.Id
+            WHERE l.hdr_record_id = @hdr_record_id;
+
+            IF EXISTS (SELECT 1 FROM dbo.Specifications
+                       WHERE EntityTypeId = 244 AND EntityId = @TRAN_ID AND SpecificationTemplateId = 45)
+                UPDATE dbo.Specifications
+                SET Measure = @sap_pr_id
+                WHERE EntityTypeId = 244 AND EntityId = @TRAN_ID AND SpecificationTemplateId = 45;
+            ELSE
+                INSERT INTO dbo.Specifications (EntityTypeId, EntityId, SpecificationTemplateId, Measure, Notes, ListItemId)
+                VALUES (244, @TRAN_ID, 45, @sap_pr_id, '', -1);
+
+            IF @DocumentId IS NOT NULL
+            BEGIN
+                EXEC dbo.Workflow_ExecuteDocumentAction
+                    @StepActionGUID = '00000000-0000-0000-0000-000000000000'
+                    ,@ActionTypeId = 7
+                    ,@DeliveredToStepId = 0
+                    ,@DelegateToIds = N'0'
+                    ,@TeamInputIds = N'0'
+                    ,@DocumentId = @DocumentId
+                    ,@ActionComment = 'Project Requisition created successfully'
+                    ,@UserId = 5
+                    ,@TeamInputCanEditRecord = 0
+                    ,@TeamInputCanEditNotes = 0
+                    ,@TeamInputCanEditAttachments = 0
+                    ,@ActionSource = N'Website';
+
+                EXEC dbo.Workflow_CalculateCurrentPendingStepId @DocumentId = @DocumentId;
+                EXEC dbo.Workflow_UpdateDocumentCurrentPendingStepId @DocumentId = @DocumentId, @CurrentPendingStepId = 0;
+                EXEC dbo.Workflow_UpdateWorkflowDocumentStatus @DocumentId = @DocumentId, @ActionTypeId = 7, @StepId = @CurrStepId, @UserId = 5, @ChangeLastAction = 0;
+            END
+
+            SELECT 'Project Requisition created successfully (completed after error: ' + @ErrorMessage + ')' AS Message,
+                   @sap_pr_id AS SapPrId, @hdr_record_id AS HdrRecordId;
+            RETURN -9;  -- same code for every unexpected error ; the message tells the cases apart
+        END TRY
+        BEGIN CATCH
+            -- Completion failed : Do NOT re-run this PreBid, it would create a second PR in SAP.
+          
+            SET @ErrorMessage = ERROR_MESSAGE();
+            SET @ErrorDesc = 'PR ' + @sap_pr_id + ' created in SAP but completion failed - complete manually, do not re-send';
+
+            INSERT INTO dbo.xx_int_ErrorLog (ErrorNumber, ErrorProcedure, ErrorLine, ErrorMessage, TranId, ErrorDate, ErrorDesc)
+            VALUES (ERROR_NUMBER(), ERROR_PROCEDURE(), ERROR_LINE(), @ErrorMessage, CAST(@TRAN_ID AS VARCHAR(100)), GETDATE(), @ErrorDesc);
+
+            -- status stays 'S' (the PR exists); the message shows it still needs completing
+            UPDATE dbo.xx_integration_tbl
+            SET error_msg = @ErrorDesc + ': ' + @ErrorMessage, last_update_date = GETDATE()
+            WHERE tran_id = @TRAN_ID AND tran_type = @txn_type;
+
+            SELECT @ErrorDesc + ': ' + @ErrorMessage AS Message, @sap_pr_id AS SapPrId, @hdr_record_id AS HdrRecordId;
+            RETURN -9;
+        END CATCH
     END CATCH
 
     SET NOCOUNT OFF
