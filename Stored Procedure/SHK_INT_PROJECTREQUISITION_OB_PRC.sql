@@ -14,12 +14,14 @@ pushes it to SAP's Z_PR_CREATION_SRV OData service to create a real Project Requ
 Change Log
 23/10/26 - Pallavi M - New procedure
 28/10/26 - Pallavi M - Account assignment validation: each line must be either WBS element only
-                       or Network + Activity only (ACCTASSCAT always 'P'), else rejected (RETURN -8).
+                       or Network + Activity only (ACCTASSCAT always 'P'), else rejected .
                        A line with both CostCode and WBSId follows the WBS.
-28/10/26 - Pallavi M - WBSId = 0 means no WBS selected (PMWeb stores 0, not NULL), so it is
-                       treated like NULL: the line takes the WBS element (CostCodes.Notes) path.
+28/10/26 - Pallavi M - WBSId = 0 means no WBS selected , so the line takes the WBS element (CostCodes.Notes) path.
 29/10/26 - Pallavi M - SAP PR number also written to dbo.Specifications ('Integration Reference',
                        template 45, EntityTypeId 244) so it shows on the PreBid screen.
+02/11/26 - Pallavi M - Line-level Estimate_PreBidDetails.MfrNumber write-back added the item number
+                       from SAP's PR response payload ,so PO can later link a Commitment line back
+                       to its PR line.
 */
 
 ALTER PROC [dbo].[SHK_INT_PROJECTREQUISITION_OB_PRC]
@@ -269,15 +271,16 @@ BEGIN
             FROM dbo.WBS w
         )
         INSERT INTO dbo.xx_projectrequisition_line_stg_tbl_ob
-            (hdr_record_id, tracking_no, prebid_id, prebid_line_no, doc_type, short_text, material, mat_grp,
+            (hdr_record_id, tracking_no, prebid_id, prebid_detail_id, prebid_line_no, doc_type, short_text, material, mat_grp,
              plant, pur_group, quantity, uom, prebid_date, rel_date, deliv_date, item_cat,
              acctasscat, prebid_amount, price_unit, currency, prebid_no, serial_no,
              wbs_element, network, activity, proj_ext, gl_acct, co_area,
              process_status, operation_flag, creation_date, last_update_date)
         SELECT
             @hdr_record_id,
-            pb.PreBidNumber,   
-            pb.Id,             
+            pb.PreBidNumber,
+            pb.Id,
+            d.Id,              -- prebid_detail_id: the exact line this row is staged from (for the MfrNumber write-back)
             RIGHT('00000' + CAST(ROW_NUMBER() OVER (ORDER BY d.LineNumber) * 10 AS VARCHAR(5)), 5),
             pgm.SpecField5,
             LEFT(pb.Description, 40),
@@ -590,14 +593,22 @@ BEGIN
             SET status = 'S', error_msg = 'Project Requisition created successfully, SAP PR ' + @sap_pr_id, last_update_date = GETDATE()
             WHERE tran_id = @TRAN_ID AND tran_type = @txn_type;
 
-            -- Write the SAP-assigned PR number (BANFN) back into the PMWeb source entity, header
-            -- level only for now (line-level deferred as it is not sent back)
+            -- Write the SAP-assigned PR number (BANFN) back into the PMWeb source entity, header level
             UPDATE dbo.Estimate_PreBids
             SET SpecField4 = @sap_pr_id
             WHERE Id = @TRAN_ID;
 
+            -- Line level: MfrNumber = the item number from SAP's PR response payload (PREQ_ITEM, e.g.
+            -- '00010') - ShkrProjectRequisitionService overwrites prebid_line_no with the confirmed
+            -- response value before this runs, so this reads the response.
+            UPDATE pbd
+            SET pbd.MfrNumber = l.prebid_line_no
+            FROM dbo.Estimate_PreBidDetails pbd
+            JOIN dbo.xx_projectrequisition_line_stg_tbl_ob l ON l.prebid_detail_id = pbd.Id
+            WHERE l.hdr_record_id = @hdr_record_id;
+
             -- The PreBid screen shows 'Integration Reference' (template 45, field 4) from
-            -- dbo.Specifications, not from SpecField4, so need to write it there
+            -- dbo.Specifications.
             IF EXISTS (SELECT 1 FROM dbo.Specifications
                        WHERE EntityTypeId = 244 AND EntityId = @TRAN_ID AND SpecificationTemplateId = 45)
                 UPDATE dbo.Specifications
@@ -738,6 +749,14 @@ BEGIN
             SET SpecField4 = @sap_pr_id
             WHERE Id = @TRAN_ID;
 
+            -- Same line-level MfrNumber write as the main success path above - a PR that succeeded in
+            -- SAP but hit a later error must still get its line references completed. 
+            UPDATE pbd
+            SET pbd.MfrNumber = l.prebid_line_no
+            FROM dbo.Estimate_PreBidDetails pbd
+            JOIN dbo.xx_projectrequisition_line_stg_tbl_ob l ON l.prebid_detail_id = pbd.Id
+            WHERE l.hdr_record_id = @hdr_record_id;
+
             IF EXISTS (SELECT 1 FROM dbo.Specifications
                        WHERE EntityTypeId = 244 AND EntityId = @TRAN_ID AND SpecificationTemplateId = 45)
                 UPDATE dbo.Specifications
@@ -770,7 +789,7 @@ BEGIN
 
             SELECT 'Project Requisition created successfully (completed after error: ' + @ErrorMessage + ')' AS Message,
                    @sap_pr_id AS SapPrId, @hdr_record_id AS HdrRecordId;
-            RETURN -9;  -- same code for every unexpected error (user 29.10); the message tells the cases apart
+            RETURN -9;  -- same code for every unexpected error ; the message tells the cases apart
         END TRY
         BEGIN CATCH
             -- Completion failed : Do NOT re-run this PreBid, it would create a second PR in SAP.
