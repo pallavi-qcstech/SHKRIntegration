@@ -30,6 +30,8 @@ public sealed class ShkrVendorService(
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
+        logger.LogInformation("ShkrVendorService started - ProcessId: {ProcessId}", Environment.ProcessId);
+
         while (!stoppingToken.IsCancellationRequested)
         {
             var nextRun = DateTime.UtcNow.Date + _vendorOptions.DailyRunTimeUtc;
@@ -44,6 +46,7 @@ public sealed class ShkrVendorService(
             }
             catch (OperationCanceledException)
             {
+                logger.LogInformation("ShkrVendorService stopping - ProcessId: {ProcessId}", Environment.ProcessId);
                 break;
             }
 
