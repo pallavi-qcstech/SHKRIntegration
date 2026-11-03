@@ -111,7 +111,9 @@ public sealed class ShkrPurchaseOrderService(
                 PoItem = line.PoItem ?? string.Empty,
                 SerialNo = "01",
                 GlAccount = line.GlAccount ?? string.Empty,
-                WbsElement = line.WbsElement ?? string.Empty,
+                WbsElement = NullIfBlank(line.WbsElement),
+                Network = NullIfBlank(line.Network),
+                Activity = NullIfBlank(line.Activity),
             });
         }
 
@@ -120,6 +122,9 @@ public sealed class ShkrPurchaseOrderService(
 
     private static string FormatDecimal(decimal? value, string format) =>
         value?.ToString(format, CultureInfo.InvariantCulture) ?? string.Empty;
+
+    private static string? NullIfBlank(string? value) =>
+        string.IsNullOrWhiteSpace(value) ? null : value.Trim();
 
     private async Task<PurchaseOrderCreateResult> SendToSapAsync(
         CreatePurchaseOrderRequest request, CancellationToken cancellationToken)
