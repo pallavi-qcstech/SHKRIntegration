@@ -39,6 +39,7 @@ builder.Services.AddSalesOrders();
 builder.Services.AddDeliveries();
 builder.Services.AddProjectRequisition();
 builder.Services.AddPurchaseOrder();
+builder.Services.AddChangeOrder();
 builder.Services.AddReservations();
 
 builder.Services.AddIntegrationHealthChecks();
@@ -55,8 +56,6 @@ app.MapHealthChecks("/health");
 
 app.MapControllers();
 
-// Startup/shutdown markers, so each deployment and app-pool recycle is visible in the log file
-// (IIS does not write the framework's "Application started" lines).
 app.Lifetime.ApplicationStarted.Register(() =>
 {
     var entryAssembly = System.Reflection.Assembly.GetEntryAssembly();
