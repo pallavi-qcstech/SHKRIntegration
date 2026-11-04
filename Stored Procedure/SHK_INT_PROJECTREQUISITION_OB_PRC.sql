@@ -22,6 +22,11 @@ Change Log
 02/11/26 - Pallavi M - Line-level Estimate_PreBidDetails.MfrNumber write-back added the item number
                        from SAP's PR response payload ,so PO can later link a Commitment line back
                        to its PR line.
+03/11/26 - Pallavi M - doc_type (BSART on the header, DOC_TYPE on every line) is read from the
+                       project's "PR Document Type" field (dbo.Specifications, EntityTypeId 1 =
+                       Projects, SpecificationTemplateId 47), not Programs.SpecField5. 
+                       (SAP sends the value to PMWeb through the Project Hierarchy API).
+                       
 */
 
 ALTER PROC [dbo].[SHK_INT_PROJECTREQUISITION_OB_PRC]
@@ -40,6 +45,9 @@ BEGIN
     DECLARE @sap_pr_id VARCHAR(10);
     DECLARE @con_error VARCHAR(MAX);
     DECLARE @bad_acct_lines VARCHAR(MAX);
+    DECLARE @pr_doc_type NVARCHAR(200);
+    DECLARE @bad_doc_type BIT;
+    DECLARE @existing_pr NVARCHAR(100);
 
     DECLARE @txn_type VARCHAR(30) = 'PREBID';
     DECLARE @DocumentId BIGINT;
@@ -67,6 +75,8 @@ BEGIN
             JOIN dbo.xx_projectrequisition_line_stg_tbl_ob l ON l.hdr_record_id = h.record_id
             WHERE l.prebid_id = @TRAN_ID
               AND h.process_status <> 'S'
+              -- keep a header that holds a SAP PR number: it is what the duplicate guard reads
+              AND NULLIF(LTRIM(RTRIM(h.sap_pr_id)), '') IS NULL
         );
 
         DELETE FROM dbo.xx_projectrequisition_line_stg_tbl_ob
@@ -162,6 +172,67 @@ BEGIN
             RETURN -2;
         END
 
+        ----------Duplicate Guard---------
+        ---- Z_PR_CREATION_SRV has no duplicate protection: sending this PreBid again would create a
+        ---- second PR in SAP. Rejected before anything is staged.
+
+        SELECT @existing_pr = NULLIF(LTRIM(RTRIM(SpecField4)), '')
+        FROM dbo.Estimate_PreBids
+        WHERE Id = @TRAN_ID;
+
+        IF @existing_pr IS NULL
+            SELECT TOP 1 @existing_pr = LTRIM(RTRIM(h.sap_pr_id))
+            FROM dbo.xx_projectrequisition_hdr_stg_tbl_ob h
+            WHERE NULLIF(LTRIM(RTRIM(h.sap_pr_id)), '') IS NOT NULL
+              AND EXISTS (SELECT 1 FROM dbo.xx_projectrequisition_line_stg_tbl_ob l
+                          WHERE l.hdr_record_id = h.record_id AND l.prebid_id = @TRAN_ID)
+            ORDER BY h.record_id DESC;
+
+        IF @existing_pr IS NOT NULL
+        BEGIN
+            SET @ERROR_DESC = 'SAP PR ' + @existing_pr + ' already created for this PreBid - not sent again.';
+
+            UPDATE dbo.xx_integration_tbl
+            SET status = 'E', error_msg = @ERROR_DESC, last_update_date = GETDATE()
+            WHERE tran_id = @TRAN_ID AND tran_type = @txn_type;
+
+            IF @DocumentId IS NOT NULL
+            BEGIN
+                EXEC dbo.Workflow_ExecuteDocumentAction
+                    @StepActionGUID = '00000000-0000-0000-0000-000000000000'
+                    ,@ActionTypeId = 3
+                    ,@DeliveredToStepId = @PrevStepId
+                    ,@DelegateToIds = N'0'
+                    ,@TeamInputIds = N'0'
+                    ,@DocumentId = @DocumentId
+                    ,@ActionComment = @ERROR_DESC
+                    ,@UserId = 5
+                    ,@TeamInputCanEditRecord = 0
+                    ,@TeamInputCanEditNotes = 0
+                    ,@TeamInputCanEditAttachments = 0
+                    ,@ActionSource = N'Website';
+
+                EXEC dbo.Workflow_CalculateCurrentPendingStepId @DocumentId = @DocumentId;
+                EXEC dbo.Workflow_UpdateDocumentCurrentPendingStepId @DocumentId = @DocumentId, @CurrentPendingStepId = @PrevStepId;
+                EXEC dbo.Workflow_RecalculateDueDate @DocumentId = @DocumentId;
+            END
+
+            SELECT @ERROR_DESC AS Message;
+            RETURN -10;
+        END
+
+        -- PR Document Type from the PreBid's project: dbo.SpecificationsTemplate 47
+        -- 'PR Document Type' (EntityTypeId 1 = Projects). Checked after staging, before the
+        -- other mandatory fields.
+        SELECT TOP 1 @pr_doc_type = LTRIM(RTRIM(CAST(s.Measure AS NVARCHAR(200))))
+        FROM dbo.Estimate_PreBids pb
+        JOIN dbo.Specifications s
+          ON s.EntityTypeId = 1
+         AND s.SpecificationTemplateId = 47
+         AND s.EntityId = pb.ProjectId
+        WHERE pb.Id = @TRAN_ID
+        ORDER BY s.Id DESC;
+
         -----------  Stage Header Data -----------------------------------
 
         BEGIN TRY
@@ -171,8 +242,8 @@ BEGIN
             (sap_pr_id, doc_type, project, prebid_no, description,
              process_status, operation_flag, creation_date, last_update_date)
         SELECT
-            NULL,                 
-            pgm.SpecField5,       
+            NULL,
+            NULLIF(@pr_doc_type, ''),   -- doc_type (BSART): project's PR Document Type; NULL when blank
             proj.ProjectName,
             pb.PreBidNumber,
             pb.Description,
@@ -282,7 +353,7 @@ BEGIN
             pb.Id,
             d.Id,              -- prebid_detail_id: the exact line this row is staged from (for the MfrNumber write-back)
             RIGHT('00000' + CAST(ROW_NUMBER() OVER (ORDER BY d.LineNumber) * 10 AS VARCHAR(5)), 5),
-            pgm.SpecField5,
+            NULLIF(@pr_doc_type, ''),   -- doc_type (DOC_TYPE): same value as the header
             LEFT(pb.Description, 40),
             '',
             pb.SpecField3,
@@ -451,6 +522,53 @@ BEGIN
             RETURN -7;
         END CATCH
 
+
+        ----------PR Document Type Validation---------
+      
+        SELECT @bad_doc_type = CASE WHEN doc_type IS NULL OR LTRIM(RTRIM(doc_type)) = '' THEN 1 ELSE 0 END
+        FROM dbo.xx_projectrequisition_hdr_stg_tbl_ob
+        WHERE record_id = @hdr_record_id;
+
+        IF @bad_doc_type = 1
+        BEGIN
+            SET @ERROR_DESC = 'PR Document Type is not set on the project (Project > PR Document Type, e.g. Z015).';
+
+            UPDATE dbo.xx_projectrequisition_hdr_stg_tbl_ob
+            SET process_status = 'E', error_msg = @ERROR_DESC, last_update_date = GETDATE()
+            WHERE record_id = @hdr_record_id;
+
+            UPDATE dbo.xx_projectrequisition_line_stg_tbl_ob
+            SET process_status = 'E', error_msg = @ERROR_DESC, last_update_date = GETDATE()
+            WHERE hdr_record_id = @hdr_record_id;
+
+            UPDATE dbo.xx_integration_tbl
+            SET status = 'E', error_msg = @ERROR_DESC, last_update_date = GETDATE()
+            WHERE tran_id = @TRAN_ID AND tran_type = @txn_type;
+
+            IF @DocumentId IS NOT NULL
+            BEGIN
+                EXEC dbo.Workflow_ExecuteDocumentAction
+                    @StepActionGUID = '00000000-0000-0000-0000-000000000000'
+                    ,@ActionTypeId = 3
+                    ,@DeliveredToStepId = @PrevStepId
+                    ,@DelegateToIds = N'0'
+                    ,@TeamInputIds = N'0'
+                    ,@DocumentId = @DocumentId
+                    ,@ActionComment = @ERROR_DESC
+                    ,@UserId = 5
+                    ,@TeamInputCanEditRecord = 0
+                    ,@TeamInputCanEditNotes = 0
+                    ,@TeamInputCanEditAttachments = 0
+                    ,@ActionSource = N'Website';
+
+                EXEC dbo.Workflow_CalculateCurrentPendingStepId @DocumentId = @DocumentId;
+                EXEC dbo.Workflow_UpdateDocumentCurrentPendingStepId @DocumentId = @DocumentId, @CurrentPendingStepId = @PrevStepId;
+                EXEC dbo.Workflow_RecalculateDueDate @DocumentId = @DocumentId;
+            END
+
+            SELECT @ERROR_DESC AS Message;
+            RETURN -5;
+        END
 
         ----------Mandatory Field Validation---------
 

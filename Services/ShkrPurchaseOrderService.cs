@@ -97,7 +97,6 @@ public sealed class ShkrPurchaseOrderService(
                 PreqNo = line.PreqNo ?? string.Empty,
             });
 
-            // One schedule line per item, delivering the full item quantity.
             request.PoSchedSet.Add(new PoSchedSetItem
             {
                 PoItem = line.PoItem ?? string.Empty,

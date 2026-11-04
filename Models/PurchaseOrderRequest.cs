@@ -46,8 +46,6 @@ public sealed class PoAccountSetItem
     [JsonPropertyName("SerialNo")] public string SerialNo { get; set; } = string.Empty;
     [JsonPropertyName("GlAccount")] public string GlAccount { get; set; } = string.Empty;
 
-    // A line is either WBS element only or Network + Activity only; the unused keys are left out
-    // of the request (null), matching the PO mapping sheet payloads.
     [JsonPropertyName("WbsElement")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? WbsElement { get; set; }
