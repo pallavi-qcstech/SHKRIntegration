@@ -23,8 +23,6 @@ public sealed class ChangeOrderItemSetItem
     [JsonPropertyName("PriceUnit")] public string? PriceUnit { get; set; }
     [JsonPropertyName("TaxCode")] public string? TaxCode { get; set; }
     [JsonPropertyName("Acctasscat")] public string? AcctAssCat { get; set; }
-    [JsonPropertyName("PreqItem")] public string? PreqItem { get; set; }
-    [JsonPropertyName("PreqNo")] public string? PreqNo { get; set; }
 }
 
 public sealed class ChangeOrderSchedSetItem

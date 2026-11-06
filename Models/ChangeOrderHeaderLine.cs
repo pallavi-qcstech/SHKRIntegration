@@ -30,6 +30,4 @@ public sealed class ChangeOrderLine
     public string? GlAccount { get; set; }
     public string? Network { get; set; }
     public string? Activity { get; set; }
-    public string? PreqNo { get; set; }
-    public string? PreqItem { get; set; }
 }

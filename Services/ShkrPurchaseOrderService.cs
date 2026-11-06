@@ -55,7 +55,7 @@ public sealed class ShkrPurchaseOrderService(
 
             return result;
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+        catch (Exception ex) when (ex is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
         {
             logger.LogError(ex, "Purchase Order create failed for header record_id {RecordId}.", header.RecordId);
             await PersistResultAsync(header.RecordId, new PurchaseOrderCreateResult(false, null, ex.Message), cancellationToken);
@@ -195,8 +195,8 @@ public sealed class ShkrPurchaseOrderService(
         const string sql = """
             SELECT
                 record_id, hdr_record_id, po_item, short_text, mat_grp, plant, quantity, po_unit,
-                net_price, price_unit, tax_code, acctasscat, wbs_element, gl_account, co_area,
-                network, activity, item_cat, preq_no, preq_item, delivery_date
+                net_price, price_unit, tax_code, acctasscat, wbs_element, gl_account,
+                network, activity, preq_no, preq_item, delivery_date
             FROM dbo.xx_purchaseorder_line_stg_tbl_ob
             WHERE hdr_record_id = @HdrRecordId
             ORDER BY record_id ASC
@@ -228,10 +228,8 @@ public sealed class ShkrPurchaseOrderService(
                 AcctAssCat = GetString(reader, "acctasscat"),
                 WbsElement = GetString(reader, "wbs_element"),
                 GlAccount = GetString(reader, "gl_account"),
-                CoArea = GetString(reader, "co_area"),
                 Network = GetString(reader, "network"),
                 Activity = GetString(reader, "activity"),
-                ItemCat = GetString(reader, "item_cat"),
                 PreqNo = GetString(reader, "preq_no"),
                 PreqItem = GetString(reader, "preq_item"),
                 DeliveryDate = GetString(reader, "delivery_date"),

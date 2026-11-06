@@ -29,10 +29,8 @@ public sealed class PurchaseOrderLine
     public string? AcctAssCat { get; set; }
     public string? WbsElement { get; set; }
     public string? GlAccount { get; set; }
-    public string? CoArea { get; set; }
     public string? Network { get; set; }
     public string? Activity { get; set; }
-    public string? ItemCat { get; set; }
     public string? PreqNo { get; set; }
     public string? PreqItem { get; set; }
     public string? DeliveryDate { get; set; }

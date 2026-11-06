@@ -13,18 +13,20 @@ Purchase Order Create via Z_PO_CREATE_SRV SAP API
 
 SCOPE: create-only, "item without material", ACCTASSCAT='P'
 
-MANDATORY (rejected here, before the SAP call): PO Document Type on the project,
+MANDATORY parameters: PO Document Type on the project,
 po_item, quantity > 0, delivery_date, tax_code
-(exactly 2 characters), preq_no, preq_item, and a valid account assignment (WBS element only, or
-Network + Activity only - see the 02/11/26 Change Log entry).
+, preq_no, preq_item, and a valid account assignment (WBS element only, or
+Network + Activity only .
+
+preq_item is CostManagement_CommitmentDetails.MfrNumber .PR Outbound writes the 
+PR's own item number into Estimate_PreBidDetails.MfrNumber on success
 
 PO is always created through a PR and must carry the PR reference.
 
 SAP PO number is wtitten back to  -> CostManagement_Commitments.Reference
 and each line's PoItem -> CostManagement_CommitmentDetails.Field10,
 
-preq_item is CostManagement_CommitmentDetails.MfrNumber .PR Outbound writes the PR's own item number into
-Estimate_PreBidDetails.MfrNumber on success
+
 Change Log
 
 23/10/26 - Pallavi M - New procedure
@@ -32,24 +34,25 @@ Change Log
 28/10/26  purch_org '9999'; commitment_detail_id saved; Reference + Field10 write-back.
 
 30/10/26  @txn_type 'Commitments' (matches START_INTEGRATION);
-          Reference/Field10 confirmed.
-
+          
 02/11/26  PO depends on the PR it came from, so two different POs are possible, one at WBS level and one
-          at Activity level). A line with CommitmentDetails.WBSId sends Network + Activity only
-           a line without WBSId sends WBS element only (CostCodes.Notes). Invalid
+          at Activity level). A line with CommitmentDetails.ProjectWBSId sends Network + Activity only
+           a line without ProjectWBSId sends WBS element only (CostCodes.Notes). Invalid
           combinations (Network without Activity, Activity without Network, neither, or both) are
           now rejected before the SAP call, same validation PR has.
 
-03/11/26  PO is created at Activity level, same as PR: a line whose WBSId has children in dbo.WBS
-          (a Network or WBS group node) is rejected with RETURN -8 "PO can be created either at
+03/11/26  PO is created at Activity level, same as PR: a line whose ProjectWBSId has children in dbo.WBS
+          (a Network or WBS group node) is rejected "PO can be created either at
           WBS level or at Activity level. Please select correct activity".
 
 03/11/26  Line WBS is read from CommitmentDetails.ProjectWBSId, not WBSId. PMWeb copies the PreBid
           line's WBSId into ProjectWBSId when the Commitment is generated; WBSId stays NULL
-          (production data, Commitments 3/7/8). Same column ROSHN uses (Commitment.sql).
-
+          
 03/11/26  doc_type is read from the project's "PO Document Type" field (dbo.Specifications,
           EntityTypeId 1 = Projects, SpecificationTemplateId 48)
+
+05/11/26  On success each line's PoItem is also written to dbo.xx_sap_po_line_ref_tbl (SAP PO item
+          register, as ROSHN xx_erp_po_line_num_tbl / AlFuttaim); Change Order reads it for the next item number.
 
 */
 
@@ -109,7 +112,7 @@ BEGIN
             JOIN dbo.xx_purchaseorder_line_stg_tbl_ob l ON l.hdr_record_id = h.record_id
             WHERE h.commitment_id = @TRAN_ID
               AND h.process_status <> 'S'
-              -- keep a header that holds a SAP PO number: it is what the duplicate guard reads
+              -- keep a header that holds a SAP PO number: it is what the duplicate guard reads[TBC]
               AND NULLIF(LTRIM(RTRIM(h.sap_po_id)), '') IS NULL
         );
 
@@ -269,15 +272,12 @@ BEGIN
         BEGIN TRY
 
             INSERT INTO dbo.xx_purchaseorder_hdr_stg_tbl_ob
-                (sap_po_id, commitment_id, commitment_code, project, description,
+                (sap_po_id, commitment_id,
                  comp_code, doc_type, vendor, purch_org, pur_group, currency, doc_date,
                  process_status, operation_flag, creation_date, last_update_date)
             SELECT
                 NULL,
                 h.Id,
-                h.CommitmentCode,
-                proj.ProjectName,
-                h.Description,
                 '1000',                                -- comp_code: hardcoded per user mapping
                 -- doc_type: project's PO Document Type; NULL when blank, so the mandatory check
                 -- below rejects it
@@ -294,14 +294,8 @@ BEGIN
             LEFT JOIN dbo.Companies comp ON comp.Id = h.CompanyId
             -- The SAP PO has one Currency, on the header (POHEADSet), so it comes from the
             -- Commitment header, not from the lines.
-						 
-									 
-															
-            LEFT JOIN dbo.Currencies cur ON cur.Id = h.CurrencyId
-											
-									  
-					 
-            WHERE h.Id = @TRAN_ID;
+			LEFT JOIN dbo.Currencies cur ON cur.Id = h.CurrencyId
+			WHERE h.Id = @TRAN_ID;
 			
             IF @@ROWCOUNT = 0
             BEGIN
@@ -349,8 +343,8 @@ BEGIN
             )
             INSERT INTO dbo.xx_purchaseorder_line_stg_tbl_ob
                 (hdr_record_id, po_item, short_text, mat_grp, plant, quantity, po_unit, net_price,
-                 price_unit, tax_code, acctasscat, cost_code_id, wbs_element, gl_account, co_area,
-                 network, activity, preq_no, preq_item, item_cat, delivery_date, commitment_detail_id,
+                 price_unit, tax_code, acctasscat, wbs_element, gl_account,
+                 network, activity, preq_no, preq_item, delivery_date, commitment_detail_id,
                  process_status, operation_flag, creation_date, last_update_date)
             SELECT
                 @hdr_record_id,
@@ -365,14 +359,12 @@ BEGIN
                 -- NULL when missing, so the mandatory check below rejects it
                 CASE WHEN LEN(taxres.TaxCode) = 2 THEN taxres.TaxCode END,
                 'P',
-                d.CostCodeId,
                 -- Same split as PR (we will have two different POs, one at
                 -- activity level and one at WBS level): a line with a ProjectWBSId is sent as
                 -- Network + Activity only (CostCodeId ignored, even when both are filled); a line
                 -- without a ProjectWBSId is sent as WBS element only (CostCodes.Notes).
                 CASE WHEN NULLIF(d.ProjectWBSId, 0) IS NULL THEN wbsres.ResolvedWbsElement ELSE '' END,
                 pgm.SpecField6,                        -- gl_account: same as PR
-                '1000',
                 CASE WHEN NULLIF(d.ProjectWBSId, 0) IS NOT NULL THEN ISNULL(wbsnet.ResolvedNetwork, '') ELSE '' END,
                 CASE WHEN NULLIF(d.ProjectWBSId, 0) IS NOT NULL THEN ISNULL(wbsnet.ResolvedActivity, '') ELSE '' END,
                 LEFT(ISNULL(pb.SpecField4, ''), 10),   -- preq_no: SAP PR number (BANFN) written back by PR Outbound
@@ -380,7 +372,6 @@ BEGIN
                                                         -- PMWeb from Estimate_PreBidDetails.MfrNumber (PR
                                                         -- Outbound write-back) through Estimate_ProcurementDetails
                                                         -- to this CommitmentDetails row
-                '',                                    -- item_cat: always blank this scope
                 CONVERT(VARCHAR(10), h.ScheduledDeliveryDate, 104),  -- delivery_date: DD.MM.YYYY
                 d.Id,                                  -- commitment_detail_id: for the Field10 write-back
                 'N', 'I', GETDATE(), GETDATE()
@@ -613,8 +604,8 @@ BEGIN
         ---- Anything else (all blank, Network without Activity, Activity without Network, or both
         ---- WBS element and Network/Activity present) is rejected here before calling SAP.
         ---- A populated ProjectWBSId must also be a leaf node in dbo.WBS (same check as PR): PO is created at
-        ---- Activity level, so a Network or WBS group node with children under it is rejected
-        ---- instead of sending a guessed (TOP 1) Activity.
+        ---- Activity level, so a Network or WBS group node with children under it is rejected.
+      
 
         SET @acct_error = NULL;
 
@@ -714,7 +705,7 @@ BEGIN
             WHERE tran_id = @TRAN_ID AND tran_type = @txn_type;
 
             -- Write the SAP PO number back to the Commitment header and each line's PO item to
-            -- the Commitment line 
+            -- the Commitment line
             UPDATE dbo.CostManagement_Commitments
             SET Reference = @sap_po_id
             WHERE Id = @TRAN_ID;
@@ -725,6 +716,13 @@ BEGIN
             JOIN dbo.xx_purchaseorder_line_stg_tbl_ob l ON l.commitment_detail_id = d.Id
             WHERE l.hdr_record_id = @hdr_record_id
               AND d.CommitmentId = @TRAN_ID;
+
+            -- PO items into the SAP PO item register read by Change Order
+            INSERT INTO dbo.xx_sap_po_line_ref_tbl
+                (commitment_id, po_number, po_item, change_order_id, change_order_detail_id, creation_date)
+            SELECT @TRAN_ID, @sap_po_id, l.po_item, NULL, NULL, GETDATE()
+            FROM dbo.xx_purchaseorder_line_stg_tbl_ob l
+            WHERE l.hdr_record_id = @hdr_record_id;
 
             IF @DocumentId IS NOT NULL
             BEGIN
@@ -863,6 +861,15 @@ BEGIN
             JOIN dbo.xx_purchaseorder_line_stg_tbl_ob l ON l.commitment_detail_id = d.Id
             WHERE l.hdr_record_id = @hdr_record_id
               AND d.CommitmentId = @TRAN_ID;
+
+            -- Same register write as the main success path (items it already wrote are skipped)
+            INSERT INTO dbo.xx_sap_po_line_ref_tbl
+                (commitment_id, po_number, po_item, change_order_id, change_order_detail_id, creation_date)
+            SELECT @TRAN_ID, @sap_po_id, l.po_item, NULL, NULL, GETDATE()
+            FROM dbo.xx_purchaseorder_line_stg_tbl_ob l
+            WHERE l.hdr_record_id = @hdr_record_id
+              AND NOT EXISTS (SELECT 1 FROM dbo.xx_sap_po_line_ref_tbl r
+                              WHERE r.commitment_id = @TRAN_ID AND r.po_item = l.po_item);
 
             IF @DocumentId IS NOT NULL
             BEGIN

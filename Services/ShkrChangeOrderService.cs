@@ -57,7 +57,7 @@ public sealed class ShkrChangeOrderService(
 
             return result;
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+        catch (Exception ex) when (ex is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
         {
             logger.LogError(ex, "Change Order failed for header record_id {RecordId}.", header.RecordId);
             await PersistResultAsync(header.RecordId, new ChangeOrderResult(false, null, ex.Message), cancellationToken);
@@ -93,8 +93,6 @@ public sealed class ShkrChangeOrderService(
                 PriceUnit = NullIfBlank(line.PriceUnit),
                 TaxCode = NullIfBlank(line.TaxCode),
                 AcctAssCat = NullIfBlank(line.AcctAssCat),
-                PreqNo = NullIfBlank(line.PreqNo),
-                PreqItem = NullIfBlank(line.PreqItem),
             };
 
             if (line.LineAction == "ADD" || HasItemChange(item))
@@ -207,7 +205,7 @@ public sealed class ShkrChangeOrderService(
             SELECT
                 record_id, hdr_record_id, line_action, po_item, delete_ind, short_text, mat_grp, plant, quantity, po_unit,
                 net_price, price_unit, tax_code, acctasscat, sched_line, delivery_date, serial_no,
-                wbs_element, gl_account, network, activity, preq_no, preq_item
+                wbs_element, gl_account, network, activity
             FROM dbo.xx_changeorder_line_stg_tbl_ob
             WHERE hdr_record_id = @HdrRecordId
             ORDER BY po_item ASC, record_id ASC
@@ -246,8 +244,6 @@ public sealed class ShkrChangeOrderService(
                 GlAccount = GetString(reader, "gl_account"),
                 Network = GetString(reader, "network"),
                 Activity = GetString(reader, "activity"),
-                PreqNo = GetString(reader, "preq_no"),
-                PreqItem = GetString(reader, "preq_item"),
             });
         }
 
