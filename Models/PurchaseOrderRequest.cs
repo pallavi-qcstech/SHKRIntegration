@@ -45,5 +45,16 @@ public sealed class PoAccountSetItem
     [JsonPropertyName("PoItem")] public string PoItem { get; set; } = string.Empty;
     [JsonPropertyName("SerialNo")] public string SerialNo { get; set; } = string.Empty;
     [JsonPropertyName("GlAccount")] public string GlAccount { get; set; } = string.Empty;
-    [JsonPropertyName("WbsElement")] public string WbsElement { get; set; } = string.Empty;
+
+    [JsonPropertyName("WbsElement")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? WbsElement { get; set; }
+
+    [JsonPropertyName("Network")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Network { get; set; }
+
+    [JsonPropertyName("Activity")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Activity { get; set; }
 }

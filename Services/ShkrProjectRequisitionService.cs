@@ -55,7 +55,7 @@ public sealed class ShkrProjectRequisitionService(
 
             return result;
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+        catch (Exception ex) when (ex is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
         {
             logger.LogError(ex, "Project Requisition create failed for header record_id {RecordId}.", header.RecordId);
             await PersistResultAsync(header.RecordId, new ProjectRequisitionCreateResult(false, null, ex.Message), lines, cancellationToken);

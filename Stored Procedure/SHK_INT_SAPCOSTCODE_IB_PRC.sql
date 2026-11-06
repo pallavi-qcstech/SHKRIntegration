@@ -1,14 +1,15 @@
 USE [PMWeb]
 GO
 
-/****** Object:  StoredProcedure [dbo].[SHK_INT_SAPCOSTCODE_IB_PRC]    Script Date: 10/28/2026 4:26:00 AM ******/
+/****** Object:  StoredProcedure [dbo].[SHK_INT_SAPCOSTCODE_IB_PRC]    Script Date: 11/5/2026 7:55:03 AM ******/
 SET ANSI_NULLS ON
 GO
 
 SET QUOTED_IDENTIFIER ON
 GO
 
-CREATE   PROC [dbo].[SHK_INT_SAPCOSTCODE_IB_PRC]
+
+CREATE     PROC [dbo].[SHK_INT_SAPCOSTCODE_IB_PRC]
 AS
 
 SET XACT_ABORT ON
@@ -69,6 +70,7 @@ DECLARE
 ,@L3_costcodegoupdetid bigint
 ,@L2_detailnumber nvarchar(10)
 ,@order_type int
+,@wbs_suffix varchar(1)
 
 ,@ErrorNumber     BIGINT
 ,@ErrorProcedure  NVARCHAR(200)
@@ -701,7 +703,7 @@ DEALLOCATE cc_cursor;
 
 
 print 'start of wbs processig'
-----------------------START OF WBS CREATE/UPDATE--------------------------------------------
+----##################################    START OF WBS CREATE/UPDATE #######################################################
 BEGIN TRY
 ---If the config id does not exist for a project, create config
 INSERT INTO dbo.WBSConfiguration (ProjectId, CustomWBS,ProgramId,UseProgram,UsePortfolio)
@@ -732,13 +734,13 @@ AND ISNULL(pmweb_wbs_config_id,0) = 0
 
 ----Insert all the parent root level WBS if not already exists, rows where parent_wbs is null
 INSERT INTO dbo.WBS(Code,Description,ConfigurationId,LineNumber)
-SELECT DISTINCT 1,sap_wbs + N'|' + sap_wbs_name,pmweb_wbs_config_id,1
+SELECT DISTINCT sap_wbs,sap_wbs_name,pmweb_wbs_config_id,1
 FROM dbo.xx_sap_costcode_stg_tbl_ib s
 WHERE s.process_status_wbs = 'N'
 AND ISNULL(s.parent_wbs, 'X') = 'X'
 AND not exists (select 1 from dbo.WBS w
 				WHERE w.ConfigurationId = s.pmweb_wbs_config_id
-				AND LEFT(w.Description, CHARINDEX('|', w.Description + '|') - 1) = s.sap_wbs
+				AND w.Code = s.sap_wbs
 				)
 
 print 'After parent wbs insert'
@@ -752,7 +754,7 @@ SET s.pmweb_wbs_id     = w.Id,
     s.last_update_date = SYSDATETIME()
 FROM dbo.xx_sap_costcode_stg_tbl_ib s
 JOIN dbo.wbs w ON w.ConfigurationId = s.pmweb_wbs_config_id 
-			   AND LEFT(w.Description, CHARINDEX('|', w.Description + '|') - 1) = s.sap_wbs
+			   AND w.Code= s.sap_wbs
 WHERE s.process_status_wbs = 'N'
 
 ----Update status as E for records where parent_wbs is null, since it was already inserted in above steps.
@@ -764,6 +766,7 @@ FROM dbo.xx_sap_costcode_stg_tbl_ib s
 WHERE s.process_status_wbs = 'N'
 AND ISNULL(s.parent_wbs, 'X') = 'X'
 AND ISNULL(s.pmweb_wbs_id,0) = 0
+
 
 --Update the pmweb id if the WBS already exists
 UPDATE s
@@ -788,7 +791,7 @@ UPDATE s
         WHERE w.ConfigurationId = wc.Id
           AND ((w.ParentId IS NULL AND (CASE WHEN NULLIF(s.parent_wbs, 'NULL') IS NULL THEN NULL ELSE ph.pmweb_wbs_id END) IS NULL)
                OR w.ParentId = (CASE WHEN NULLIF(s.parent_wbs, 'NULL') IS NULL THEN NULL ELSE ph.pmweb_wbs_id END))
-          AND LEFT(w.Description, CHARINDEX('|', w.Description + '|') - 1) = s.sap_wbs
+          AND w.Code = s.sap_wbs
     ) mw
     WHERE s.process_status_wbs = 'N'
       AND (NULLIF(s.parent_wbs, 'NULL') IS NULL OR ph.pmweb_wbs_id IS NOT NULL);
@@ -835,12 +838,13 @@ BEGIN
 	SET @parent_wbs_id = 0
 	SET @NewLineNumber = 0
 	SET @wbs_id = 0
+	SET @wbs_suffix = ''
 	print 'processing insert for WBS ' print @sap_wbs
 
 	SELECT TOP 1 @parent_wbs_id = id
     FROM dbo.WBS w
     WHERE ConfigurationId = @wbs_config_id
-	AND LEFT(w.Description, CHARINDEX('|', w.Description + '|') - 1) = @parent_wbs; --assuming it is an ordered list and project hierarchy is inserted in table with parent before the child
+	AND Code = @parent_wbs; --assuming it is an ordered list and project hierarchy is inserted in table with parent before the child
 
 
 	print 'parent wbs id = ' print @parent_wbs_id 
@@ -851,11 +855,13 @@ BEGIN
     AND ParentId = @parent_wbs_id;
 
 	print '@NewLineNumber' print @NewLineNumber
+
+	SET @wbs_suffix = (select case when @order_type = 2 then 'N' when @order_type = 3 then 'A' else 'W' end)
  
     INSERT INTO dbo.WBS (Code, Description, ParentId, LineNumber, ConfigurationId)
     VALUES (
-        CAST(@NewLineNumber AS NVARCHAR(50)),
-        @sap_wbs + N'|' + @sap_wbs_desc,
+        @sap_wbs,
+        @sap_wbs_desc+ N'(' + @wbs_suffix+ N')',
         @parent_wbs_id,
         @NewLineNumber,
         @wbs_config_id

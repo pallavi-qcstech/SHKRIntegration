@@ -35,6 +35,7 @@ public static class ShkrSapIntegrationExtensions
     public static IHttpClientBuilder AddShkrSapHttpClientNoRetry(this IServiceCollection services, string clientName)
     {
         return services.AddHttpClient(clientName, ConfigureShkrSapClient)
+            .ConfigureHttpClient(c => c.Timeout = TimeSpan.FromSeconds(60))
             .ConfigurePrimaryHttpMessageHandler(CreateShkrSapHandler)
             .AddHttpMessageHandler<ShkrSapCsrfTokenHandler>()
             .AddHttpMessageHandler<ShkrSapRequestResponseLoggingHandler>();

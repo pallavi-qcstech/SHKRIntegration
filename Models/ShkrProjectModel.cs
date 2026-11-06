@@ -68,5 +68,8 @@ public sealed class Proj
     public DateTime? CreatedOn { get; set; }
 
     [JsonPropertyName("Companycode")] public string CompanyCode { get; set; } = string.Empty;
+
+    [JsonPropertyName("PRDocType")] public string PrDocType { get; set; } = string.Empty;
+    [JsonPropertyName("PODocType")] public string PoDocType { get; set; } = string.Empty;
 }
 
