@@ -14,7 +14,7 @@ Purchase Order Create via Z_PO_CREATE_SRV SAP API
 SCOPE: create-only, "item without material", ACCTASSCAT='P'
 
 MANDATORY parameters: PO Document Type on the project,
-po_item, quantity > 0, delivery_date, tax_code
+po_item, quantity > 0, delivery_date (not before today), tax_code, mat_grp
 , preq_no, preq_item, and a valid account assignment (WBS element only, or
 Network + Activity only .
 
@@ -54,6 +54,13 @@ Change Log
 05/11/26  On success each line's PoItem is also written to dbo.xx_sap_po_line_ref_tbl (SAP PO item
           register, as ROSHN xx_erp_po_line_num_tbl / AlFuttaim); Change Order reads it for the next item number.
 
+11/11/26  Mandatory check : Scheduled Delivery Date before today is rejected before the SAP call
+          (SAP ME/039 "Delivery date is in the past"); each failing field's message is on its own line.
+
+12/11/26  mat_grp is taken from the PreBid the PR was created from (Estimate_PreBids.SpecField3, same as PR)
+          instead of the hardcoded 'S000001' (SAP MEPO/072 "material group differs from PR"). Blank is
+          rejected before the SAP call.
+
 */
 
 ALTER PROC [dbo].[SHK_INT_PURCHASEORDER_OB_PRC]
@@ -74,11 +81,15 @@ BEGIN
 
     DECLARE @bad_item_qty BIT;
     DECLARE @bad_deliv BIT;
+    DECLARE @bad_deliv_past BIT;
+    DECLARE @deliv_past_date VARCHAR(10);
+    DECLARE @NL CHAR(2) = CHAR(13) + CHAR(10);
     DECLARE @bad_tax BIT;
     DECLARE @bad_preq_no BIT;
     DECLARE @bad_preq_item BIT;
     DECLARE @bad_uom BIT;
     DECLARE @bad_price BIT;
+    DECLARE @bad_mat_grp BIT;
     DECLARE @bad_vendor BIT;
     DECLARE @bad_currency BIT;
     DECLARE @bad_acct_lines VARCHAR(MAX);
@@ -205,7 +216,7 @@ BEGIN
             END
 
             SELECT @ERROR_DESC AS Message;
-            RETURN -2;
+            RETURN -1;
         END
 
         ----------Duplicate Guard---------
@@ -253,7 +264,7 @@ BEGIN
             END
 
             SELECT @ERROR_DESC AS Message;
-            RETURN -10;
+            RETURN -1;
         END
 
         -- PO Document Type from the Commitment's project: dbo.SpecificationsTemplate 48
@@ -327,7 +338,7 @@ BEGIN
                 END
 
                 SELECT @ERROR_DESC AS Message;
-                RETURN -3;
+                RETURN -1;
             END
 
             SET @hdr_record_id = SCOPE_IDENTITY();
@@ -350,7 +361,7 @@ BEGIN
                 @hdr_record_id,
                 RIGHT('00000' + CAST(ROW_NUMBER() OVER (ORDER BY d.LineNumber) * 10 AS VARCHAR(5)), 5),  -- same as PR
                 LEFT(ISNULL(d.Description, ''), 40),
-                'S000001',                             -- mat_grp: hardcoded per user mapping
+                NULLIF(LTRIM(RTRIM(pb.SpecField3)), ''),  -- mat_grp: same as PR (Estimate_PreBids.SpecField3)
                 pgm.SpecField1,                        -- plant: same as PR
                 d.Quantity,
                 LTRIM(RTRIM(LEFT(uom.UOM, CHARINDEX(' - ', uom.UOM + ' - ') - 1))),
@@ -478,7 +489,7 @@ BEGIN
                 END
 
                 SELECT @ERROR_DESC AS Message;
-                RETURN -4;
+                RETURN -1;
             END
 
         END TRY
@@ -522,7 +533,7 @@ BEGIN
             END
 
             SELECT @ERROR_DESC AS Message;
-            RETURN -7;
+            RETURN -1;
         END CATCH
 
         ----------Mandatory Field Validation---------
@@ -530,11 +541,17 @@ BEGIN
             @bad_item_qty = MAX(CASE WHEN po_item IS NULL OR LTRIM(RTRIM(po_item)) = ''
                                        OR quantity IS NULL OR quantity <= 0 THEN 1 ELSE 0 END),
             @bad_deliv    = MAX(CASE WHEN delivery_date IS NULL OR LTRIM(RTRIM(delivery_date)) = '' THEN 1 ELSE 0 END),
-            @bad_tax      = MAX(CASE WHEN tax_code IS NULL OR LEN(tax_code) <> 2 THEN 1 ELSE 0 END),
+            -- delivery_date is staged as DD.MM.YYYY (style 104) from the Commitment's Scheduled Delivery Date
+            @bad_deliv_past = MAX(CASE WHEN LTRIM(RTRIM(ISNULL(delivery_date, ''))) <> ''
+                                        AND CONVERT(DATE, delivery_date, 104) < CAST(GETDATE() AS DATE) THEN 1 ELSE 0 END),
+            @deliv_past_date = MAX(CASE WHEN LTRIM(RTRIM(ISNULL(delivery_date, ''))) <> ''
+                                         AND CONVERT(DATE, delivery_date, 104) < CAST(GETDATE() AS DATE) THEN delivery_date ELSE '' END),
+            @bad_tax     = MAX(CASE WHEN tax_code IS NULL OR LEN(tax_code) <> 2 THEN 1 ELSE 0 END),
             @bad_preq_no  = MAX(CASE WHEN preq_no IS NULL OR LTRIM(RTRIM(preq_no)) = '' THEN 1 ELSE 0 END),
             @bad_preq_item = MAX(CASE WHEN preq_item IS NULL OR LTRIM(RTRIM(preq_item)) = '' THEN 1 ELSE 0 END),
             @bad_uom      = MAX(CASE WHEN po_unit IS NULL OR LTRIM(RTRIM(po_unit)) = '' THEN 1 ELSE 0 END),
-            @bad_price    = MAX(CASE WHEN net_price IS NULL OR net_price <= 0 THEN 1 ELSE 0 END)
+            @bad_price    = MAX(CASE WHEN net_price IS NULL OR net_price <= 0 THEN 1 ELSE 0 END),
+            @bad_mat_grp  = MAX(CASE WHEN mat_grp IS NULL OR LTRIM(RTRIM(mat_grp)) = '' THEN 1 ELSE 0 END)
         FROM dbo.xx_purchaseorder_line_stg_tbl_ob
         WHERE hdr_record_id = @hdr_record_id;
 
@@ -544,27 +561,31 @@ BEGIN
         FROM dbo.xx_purchaseorder_hdr_stg_tbl_ob
         WHERE record_id = @hdr_record_id;
 
-        IF @bad_doc_type = 1 OR @bad_item_qty = 1 OR @bad_deliv = 1 OR @bad_tax = 1 OR @bad_preq_no = 1 OR @bad_preq_item = 1
-           OR @bad_uom = 1 OR @bad_price = 1 OR @bad_vendor = 1 OR @bad_currency = 1
+        IF @bad_doc_type = 1 OR @bad_item_qty = 1 OR @bad_deliv = 1 OR @bad_deliv_past = 1 OR @bad_tax = 1 OR @bad_preq_no = 1
+           OR @bad_preq_item = 1 OR @bad_uom = 1 OR @bad_price = 1 OR @bad_mat_grp = 1 OR @bad_vendor = 1 OR @bad_currency = 1
         BEGIN
-            SET @ERROR_DESC = LTRIM(
-                  CASE WHEN @bad_doc_type = 1 THEN 'PO Document Type is not set on the project (Project > PO Document Type, e.g. ZLOC). ' ELSE '' END
-                + CASE WHEN @bad_vendor = 1 THEN 'Vendor missing - the Commitment has no vendor company, or the company has no SAP vendor number (Company Code). ' ELSE '' END
-                + CASE WHEN @bad_currency = 1 THEN 'Currency missing on the Commitment header. ' ELSE '' END
-                + CASE WHEN @bad_item_qty = 1 THEN 'Line item number and quantity must not be blank/zero. ' ELSE '' END
-                + CASE WHEN @bad_uom = 1 THEN 'Unit of measure missing on one or more Commitment lines. ' ELSE '' END
-                + CASE WHEN @bad_price = 1 THEN 'Amount must be greater than zero on every Commitment line. ' ELSE '' END
-                + CASE WHEN @bad_deliv = 1 THEN 'Delivery date missing (Scheduled Delivery Date on the Commitment). ' ELSE '' END
-                + CASE WHEN @bad_tax = 1 THEN 'Tax code missing or invalid (Commitment SpecField1 must start with a 2-character SAP tax code, e.g. ''V2-...''). ' ELSE '' END
-                + CASE WHEN @bad_preq_no = 1 THEN 'SAP PR number missing - the Commitment must come from a Procurement generated from a PR that was successfully sent to SAP. ' ELSE '' END
-                + CASE WHEN @bad_preq_item = 1 THEN 'PR item not found - one or more Commitment lines have no MfrNumber (PR line reference) carried forward from the PreBid line. ' ELSE '' END);
+            -- one line per failing field; STUFF removes the leading line break
+            SET @ERROR_DESC = STUFF(
+                  CASE WHEN @bad_doc_type = 1 THEN @NL + 'PO Document Type is not set on the project (Project > PO Document Type, e.g. ZLOC).' ELSE '' END
+                + CASE WHEN @bad_vendor = 1 THEN @NL + 'Vendor missing - the Commitment has no vendor company, or the company has no SAP vendor number (Company Code).' ELSE '' END
+                + CASE WHEN @bad_currency = 1 THEN @NL + 'Currency missing on the Commitment header.' ELSE '' END
+                + CASE WHEN @bad_item_qty = 1 THEN @NL + 'Line item number and quantity must not be blank/zero.' ELSE '' END
+                + CASE WHEN @bad_uom = 1 THEN @NL + 'Unit of measure missing on one or more Commitment lines.' ELSE '' END
+                + CASE WHEN @bad_price = 1 THEN @NL + 'Amount must be greater than zero on every Commitment line.' ELSE '' END
+                + CASE WHEN @bad_mat_grp = 1 THEN @NL + 'Material group missing on the PreBid (PR) this Commitment was generated from - it must be filled, as it is sent to SAP on the PR.' ELSE '' END
+                + CASE WHEN @bad_deliv = 1 THEN @NL + 'Delivery date missing (Scheduled Delivery Date on the Commitment).' ELSE '' END
+                + CASE WHEN @bad_deliv_past = 1 THEN @NL + 'Scheduled Delivery Date on the Commitment (' + @deliv_past_date + ') is in the past - it must be today or a later date.' ELSE '' END
+                + CASE WHEN @bad_tax = 1 THEN @NL + 'Tax code missing or invalid (Commitment SpecField1 must start with a 2-character SAP tax code, e.g. ''V2-...'').' ELSE '' END
+                + CASE WHEN @bad_preq_no = 1 THEN @NL + 'SAP PR number missing - the Commitment must come from a Procurement generated from a PR that was successfully sent to SAP.' ELSE '' END
+                + CASE WHEN @bad_preq_item = 1 THEN @NL + 'PR item not found - one or more Commitment lines have no MfrNumber (PR line reference) carried forward from the PreBid line.' ELSE '' END,
+                1, 2, '');
 
             UPDATE dbo.xx_purchaseorder_hdr_stg_tbl_ob
-            SET process_status = 'E', error_msg = @ERROR_DESC, last_update_date = GETDATE()
+            SET process_status = 'E', error_msg = LEFT(@ERROR_DESC, 2000), last_update_date = GETDATE()
             WHERE record_id = @hdr_record_id;
 
             UPDATE dbo.xx_purchaseorder_line_stg_tbl_ob
-            SET process_status = 'E', error_msg = @ERROR_DESC, last_update_date = GETDATE()
+            SET process_status = 'E', error_msg = LEFT(@ERROR_DESC, 2000), last_update_date = GETDATE()
             WHERE hdr_record_id = @hdr_record_id;
 
             UPDATE dbo.xx_integration_tbl
@@ -593,7 +614,7 @@ BEGIN
             END
 
             SELECT @ERROR_DESC AS Message;
-            RETURN -5;
+            RETURN -1;
         END
 
         ----------Account Assignment Validation---------
@@ -685,7 +706,7 @@ BEGIN
             END
 
             SELECT @ERROR_DESC AS Message;
-            RETURN -8;
+            RETURN -1;
         END
 
         --------Call Shaker API-----------------------
@@ -778,7 +799,7 @@ BEGIN
             END
 
             SELECT @ERROR_DESC AS Message, @hdr_record_id AS HdrRecordId;
-            RETURN -6;
+            RETURN -2;
         END
 
     END TRY
@@ -839,7 +860,7 @@ BEGIN
             END
 
             SELECT @ERROR_DESC AS Message;
-            RETURN -9;
+            RETURN -2;
         END
 
         -- PO already created in SAP: finish the success steps that the error interrupted
@@ -894,7 +915,7 @@ BEGIN
 
             SELECT 'Purchase Order created successfully (completed after error: ' + @ErrorMessage + ')' AS Message,
                    @sap_po_id AS SapPoId, @hdr_record_id AS HdrRecordId;
-            RETURN -9;  
+            RETURN -2;  
         END TRY
         BEGIN CATCH
            
@@ -910,7 +931,7 @@ BEGIN
             WHERE tran_id = @TRAN_ID AND tran_type = @txn_type;
 
             SELECT @ErrorDesc + ': ' + @ErrorMessage AS Message, @sap_po_id AS SapPoId, @hdr_record_id AS HdrRecordId;
-            RETURN -9;
+            RETURN -2;
         END CATCH
     END CATCH
 

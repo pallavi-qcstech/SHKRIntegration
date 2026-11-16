@@ -24,9 +24,8 @@ Change Log
                        to its PR line.
 03/11/26 - Pallavi M - doc_type (BSART on the header, DOC_TYPE on every line) is read from the
                        project's "PR Document Type" field (dbo.Specifications, EntityTypeId 1 =
-                       Projects, SpecificationTemplateId 47), not Programs.SpecField5. 
-                       (SAP sends the value to PMWeb through the Project Hierarchy API).
-                       
+                       Projects, SpecificationTemplateId 47), not Programs.SpecField5.
+                       (SAP sends the value to PMWeb through the Project API).
 */
 
 ALTER PROC [dbo].[SHK_INT_PROJECTREQUISITION_OB_PRC]
@@ -139,39 +138,6 @@ BEGIN
             RETURN -1;
         END
 
-        IF NOT EXISTS (SELECT 1 FROM dbo.Estimate_PreBidDetails WHERE PreBidId = @TRAN_ID)
-        BEGIN
-            SET @ERROR_DESC = 'Estimate_PreBids ' + CAST(@TRAN_ID AS VARCHAR(20)) + ' has no Estimate_PreBidDetails lines.';
-
-            UPDATE dbo.xx_integration_tbl
-            SET status = 'E', error_msg = @ERROR_DESC, last_update_date = GETDATE()
-            WHERE tran_id = @TRAN_ID AND tran_type = @txn_type;
-
-            IF @DocumentId IS NOT NULL
-            BEGIN
-                EXEC dbo.Workflow_ExecuteDocumentAction
-                    @StepActionGUID = '00000000-0000-0000-0000-000000000000'
-                    ,@ActionTypeId = 3
-                    ,@DeliveredToStepId = @PrevStepId
-                    ,@DelegateToIds = N'0'
-                    ,@TeamInputIds = N'0'
-                    ,@DocumentId = @DocumentId
-                    ,@ActionComment = @ERROR_DESC
-                    ,@UserId = 5
-                    ,@TeamInputCanEditRecord = 0
-                    ,@TeamInputCanEditNotes = 0
-                    ,@TeamInputCanEditAttachments = 0
-                    ,@ActionSource = N'Website';
-
-                EXEC dbo.Workflow_CalculateCurrentPendingStepId @DocumentId = @DocumentId;
-                EXEC dbo.Workflow_UpdateDocumentCurrentPendingStepId @DocumentId = @DocumentId, @CurrentPendingStepId = @PrevStepId;
-                EXEC dbo.Workflow_RecalculateDueDate @DocumentId = @DocumentId;
-            END
-
-            SELECT @ERROR_DESC AS Message;
-            RETURN -2;
-        END
-
         ----------Duplicate Guard---------
         ---- Z_PR_CREATION_SRV has no duplicate protection: sending this PreBid again would create a
         ---- second PR in SAP. Rejected before anything is staged.
@@ -218,7 +184,7 @@ BEGIN
             END
 
             SELECT @ERROR_DESC AS Message;
-            RETURN -10;
+            RETURN -1;
         END
 
         -- PR Document Type from the PreBid's project: dbo.SpecificationsTemplate 47
@@ -283,7 +249,7 @@ BEGIN
             END
 
             SELECT @ERROR_DESC AS Message;
-            RETURN -3;
+            RETURN -1;
         END
 
         --------- Stage Line Data -------------
@@ -332,7 +298,7 @@ BEGIN
             END
 
             SELECT @ERROR_DESC AS Message;
-            RETURN -3;
+            RETURN -1;
         END
 
         ;WITH WbsCode AS (
@@ -475,7 +441,7 @@ BEGIN
             END
 
             SELECT @ERROR_DESC AS Message;
-            RETURN -4;
+            RETURN -1;
         END
 
         END TRY
@@ -519,7 +485,7 @@ BEGIN
             END
 
             SELECT @ERROR_DESC AS Message;
-            RETURN -7;
+            RETURN -1;
         END CATCH
 
 
@@ -567,7 +533,7 @@ BEGIN
             END
 
             SELECT @ERROR_DESC AS Message;
-            RETURN -5;
+            RETURN -1;
         END
 
         ----------Mandatory Field Validation---------
@@ -618,7 +584,7 @@ BEGIN
             END
 
             SELECT @ERROR_DESC AS Message;
-            RETURN -5;
+            RETURN -1;
         END
 
         ----------Account Assignment Validation---------
@@ -692,7 +658,7 @@ BEGIN
             END
 
             SELECT @ERROR_DESC AS Message;
-            RETURN -8;
+            RETURN -1;
         END
 
         --------Call Shaker API-----------------------
@@ -791,7 +757,7 @@ BEGIN
             END
 
             SELECT @ERROR_DESC AS Message, @hdr_record_id AS HdrRecordId;
-            RETURN -6;
+            RETURN -2;
         END
 
     END TRY
@@ -852,7 +818,7 @@ BEGIN
             END
 
             SELECT @ERROR_DESC AS Message;
-            RETURN -9;
+            RETURN -2;
         END
 
         -- PR already created in SAP: finish the success steps that the error interrupted
@@ -907,7 +873,7 @@ BEGIN
 
             SELECT 'Project Requisition created successfully (completed after error: ' + @ErrorMessage + ')' AS Message,
                    @sap_pr_id AS SapPrId, @hdr_record_id AS HdrRecordId;
-            RETURN -9;  -- same code for every unexpected error ; the message tells the cases apart
+            RETURN -2;  -- same code for every unexpected error ; the message tells the cases apart
         END TRY
         BEGIN CATCH
             -- Completion failed : Do NOT re-run this PreBid, it would create a second PR in SAP.
@@ -924,7 +890,7 @@ BEGIN
             WHERE tran_id = @TRAN_ID AND tran_type = @txn_type;
 
             SELECT @ErrorDesc + ': ' + @ErrorMessage AS Message, @sap_pr_id AS SapPrId, @hdr_record_id AS HdrRecordId;
-            RETURN -9;
+            RETURN -2;
         END CATCH
     END CATCH
 
