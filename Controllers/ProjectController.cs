@@ -9,9 +9,9 @@ public sealed class ProjectController(ShkrProjectService projectService) : Contr
 {
     [HttpPost("project")]
     public async Task<IActionResult> Sync(
-        [FromQuery] string? projectCode, [FromQuery] string? creatdon, CancellationToken cancellationToken)
+        [FromQuery] string? projectCode, [FromQuery] string? createdon, CancellationToken cancellationToken)
     {
-        var result = await projectService.FetchSapDataToStagingTableAsync(projectCode, creatdon, cancellationToken);
+        var result = await projectService.FetchSapDataToStagingTableAsync(projectCode, createdon, cancellationToken);
         return Ok(result);
     }
 }

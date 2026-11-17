@@ -8,7 +8,7 @@ GO
 SET QUOTED_IDENTIFIER ON
 GO
 
-CREATE   PROC [dbo].[SHK_INT_PROJECT_IB_PRC]
+ALTER PROC [dbo].[SHK_INT_PROJECT_IB_PRC]
 AS
 
 SET XACT_ABORT ON
@@ -23,8 +23,14 @@ The procedure validates the data and creates/updates projects in PMWeb
 
 Change Log
 7/9/26 - Roopal C - New procedure
-				
+17/11/26 - Pallavi M -  SAP PROJSet PRDocType / PODocType are staged in xx_project_stg_tbl_ib
+                       (pr_doc_type, po_doc_type) and written to dbo.Specifications (EntityTypeId 1 =
+                       Projects, SpecificationTemplateId 47 = PR Document Type, 48 = PO Document Type).
+                       Written for every project staged in this run that exists in PMWeb (exact
+                       ProjectNumber match); a blank value from SAP is stored as NULL.
+                      
 */
+
 SET NOCOUNT ON
 BEGIN TRY  
 --BEGIN TRAN
@@ -55,11 +61,25 @@ DECLARE
 ,@ErrorMessage    NVARCHAR(4000)
 ,@ErrorDesc		NVARCHAR(4000)
 
+---document type variables
+,@doc_project_id bigint
+,@pr_doc_type varchar(10)
+,@po_doc_type varchar(10)
+,@existing_spec_id bigint
+
 
 
 SET @ERROR_DESC=''
 SET @ERROR_STATUS=0
 SET @systemdate = GETDATE()
+
+--rows staged by this run (before the project steps change their status) - used by the document type step
+IF OBJECT_ID('tempdb..#RunRows') IS NOT NULL DROP TABLE #RunRows;
+
+SELECT record_id, project_code, pr_doc_type, po_doc_type
+INTO #RunRows
+FROM dbo.xx_project_stg_tbl_ib
+WHERE process_status = 'N';
 
 --update all records as E where project profile is not a valid PMWeb program code
 UPDATE  a
@@ -133,6 +153,7 @@ select 	record_id,project_code
 	,(select id from dbo.Programs where Name = a.project_profile and IsActive=1) programid
 from xx_project_stg_tbl_ib a
 where process_status in ('N','E') and isnull(operation_flag,'I')='I'
+and not exists (select 1 from dbo.Projects p where p.ProjectNumber = a.project_code and p.IsActive=1)
 
 OPEN prj_cursor
 
@@ -224,8 +245,85 @@ FETCH NEXT FROM prj_cursor INTO @record_id,@project_code
 					,@program_id
 END
 
-CLOSE prj_cursor;     
+CLOSE prj_cursor;
 DEALLOCATE prj_cursor;
+
+
+--PR / PO Document Type (dbo.Specifications templates 47 / 48) for every project staged in this run
+--that exists in PMWeb - runs after the create step, so a project created above also gets its values.
+--Latest staged row per project_code; a blank value from SAP is stored as NULL.
+DECLARE doctype_cursor CURSOR LOCAL FAST_FORWARD FOR
+SELECT r.project_code
+	,p.Id
+	,NULLIF(LTRIM(RTRIM(r.pr_doc_type)), '')
+	,NULLIF(LTRIM(RTRIM(r.po_doc_type)), '')
+FROM #RunRows r
+INNER JOIN dbo.Projects p
+	ON p.ProjectNumber = r.project_code
+	AND p.IsActive = 1
+WHERE r.record_id = (SELECT MAX(r2.record_id) FROM #RunRows r2 WHERE r2.project_code = r.project_code)
+
+OPEN doctype_cursor
+
+FETCH NEXT FROM doctype_cursor INTO @project_code, @doc_project_id, @pr_doc_type, @po_doc_type
+
+WHILE @@FETCH_STATUS = 0
+BEGIN
+	BEGIN TRY
+		-- Template 47: PR Document Type
+		SET @existing_spec_id = NULL
+
+		SELECT TOP 1 @existing_spec_id = Id
+		FROM dbo.Specifications
+		WHERE EntityTypeId = 1 AND SpecificationTemplateId = 47 AND EntityId = @doc_project_id
+		ORDER BY Id DESC
+
+		IF @existing_spec_id IS NOT NULL
+			UPDATE dbo.Specifications SET Measure = @pr_doc_type WHERE Id = @existing_spec_id
+		ELSE
+			INSERT INTO dbo.Specifications (EntityTypeId, EntityId, SpecificationTemplateId, Measure)
+			VALUES (1, @doc_project_id, 47, @pr_doc_type)
+
+		-- Template 48: PO Document Type
+		SET @existing_spec_id = NULL
+
+		SELECT TOP 1 @existing_spec_id = Id
+		FROM dbo.Specifications
+		WHERE EntityTypeId = 1 AND SpecificationTemplateId = 48 AND EntityId = @doc_project_id
+		ORDER BY Id DESC
+
+		IF @existing_spec_id IS NOT NULL
+			UPDATE dbo.Specifications SET Measure = @po_doc_type WHERE Id = @existing_spec_id
+		ELSE
+			INSERT INTO dbo.Specifications (EntityTypeId, EntityId, SpecificationTemplateId, Measure)
+			VALUES (1, @doc_project_id, 48, @po_doc_type)
+	END TRY
+	BEGIN CATCH
+		SET @ErrorNumber = ERROR_NUMBER()
+		SET @ErrorProcedure = ERROR_PROCEDURE()
+		SET @ErrorLine = ERROR_LINE()
+		SET @ErrorMessage = ERROR_MESSAGE()
+
+		--process_status is left as the project step set it (an 'E' on a new project would add it again)
+		UPDATE a
+		SET a.error_msg = LEFT(ISNULL(a.error_msg + ' | ', '') + 'Document type not updated: ' + @ErrorMessage, 2000)
+			,a.last_update_date = @systemdate
+		FROM dbo.xx_project_stg_tbl_ib a
+		INNER JOIN #RunRows r ON r.record_id = a.record_id
+		WHERE r.project_code = @project_code
+
+		INSERT INTO dbo.xx_int_ErrorLog (ErrorNumber, ErrorProcedure, ErrorLine, ErrorMessage, TranId, ErrorDate, ErrorDesc)
+		VALUES (@ErrorNumber, @ErrorProcedure, @ErrorLine, @ErrorMessage, @doc_project_id, @systemdate,
+				'Document type exception in SHK_INT_PROJECT_IB_PRC for project_code ' + @project_code)
+	END CATCH
+
+	FETCH NEXT FROM doctype_cursor INTO @project_code, @doc_project_id, @pr_doc_type, @po_doc_type
+END
+
+CLOSE doctype_cursor;
+DEALLOCATE doctype_cursor;
+
+DROP TABLE #RunRows;
 
 END TRY
 
