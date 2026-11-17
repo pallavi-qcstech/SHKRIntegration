@@ -50,64 +50,39 @@ public sealed class ShkrVendorService(
                 break;
             }
 
+            await RunScheduledAsync(stoppingToken);
+        }
+    }
+
+    private const int StaleErrorThresholdDays = 7;
+    private const string SapDateFormat = "yyyyMMdd";
+    public const string SchedulerRunTag = "Vendor-Scheduler";
+    public const string ApiRunTag = "Vendor-API";
+
+    private readonly SemaphoreSlim _runLock = new(1, 1);
+
+    private async Task RunScheduledAsync(CancellationToken stoppingToken)
+    {
+        if (!await _runLock.WaitAsync(0, stoppingToken))
+        {
+            logger.LogWarning("[{RunTagName}] Daily vendor run skipped: a Vendor run is already in progress.", SchedulerRunTag);
+            return;
+        }
+
+        try
+        {
+            using var runScope = BeginRunScope(SchedulerRunTag);
+
             try
             {
-                logger.LogInformation("Daily vendor staging sync starting.");
-
                 var lastRunEndDateUtc = await GetLastRunEndDateAsync(stoppingToken);
                 var (startDate, endDate) = ResolveSyncDateRange(_vendorOptions, DateTime.UtcNow, lastRunEndDateUtc);
 
-                var allVendors = await GetAllVendors(
-                    startDate.ToString(SapDateFormat), endDate.ToString(SapDateFormat), stoppingToken);
-
-                var errors = new List<string>();
-                var processed = 0;
-
-                foreach (var detail in allVendors.VendorDetailsSet.Results)
-                {
-                    stoppingToken.ThrowIfCancellationRequested();
-
-                    if (!long.TryParse(detail.VendorId, out var numericVendorId))
-                    {
-                        logger.LogWarning("Vendor {VendorId}: VendorID is not numeric, skipped.", detail.VendorId);
-                        errors.Add($"Vendor {detail.VendorId}: VendorID is not numeric, skipped.");
-                        continue;
-                    }
-
-                    try
-                    {
-                        await SaveVendor(numericVendorId, detail, stoppingToken);
-                        processed++;
-                    }
-                    catch (Exception ex) when (ex is not OperationCanceledException)
-                    {
-                        logger.LogError(ex, "Vendor sync failed for VendorID {VendorId}.", detail.VendorId);
-                        errors.Add($"Vendor {detail.VendorId}: {ex.Message}");
-                    }
-                }
-
-                logger.LogInformation(
-                    "Daily vendor staging sync completed: {Processed} processed, {Failed} failed.",
-                    processed, errors.Count);
-
-                await InsertRunRecordAsync(startDate, endDate, stoppingToken);
-
-                await using (var storedProcedureConnection = new SqlConnection(_databaseOptions.ConnectionString))
-                {
-                    await storedProcedureConnection.OpenAsync(stoppingToken);
-
-                    await using var promotionCommand = new SqlCommand("dbo.SHK_INT_VENDOR_IB_PRC", storedProcedureConnection)
-                    {
-                        CommandType = CommandType.StoredProcedure
-                    };
-
-                    await promotionCommand.ExecuteNonQueryAsync(stoppingToken);
-                    logger.LogInformation("SHK_INT_VENDOR_IB_PRC executed.");
-                }
-
-                await LogStaleStagingErrorsAsync(stoppingToken);
+                await RunAsync(
+                    string.Empty, startDate.ToString(SapDateFormat), endDate.ToString(SapDateFormat),
+                    (startDate, endDate), stoppingToken);
             }
-            catch (OperationCanceledException)
+            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
             {
             }
             catch (Exception ex)
@@ -115,10 +90,113 @@ public sealed class ShkrVendorService(
                 logger.LogError(ex, "Daily vendor staging sync run failed.");
             }
         }
+        finally
+        {
+            _runLock.Release();
+        }
     }
 
-    private const int StaleErrorThresholdDays = 7;
-    private const string SapDateFormat = "yyyyMMdd";
+    public async Task<SyncResult?> RunFromApiAsync(
+        string? vendorId, string startDate, string endDate, CancellationToken cancellationToken = default)
+    {
+        if (!await _runLock.WaitAsync(0, cancellationToken))
+        {
+            logger.LogWarning("[{RunTagName}] Vendor API run rejected: a Vendor run is already in progress.", ApiRunTag);
+            return null;
+        }
+
+        try
+        {
+            using var runScope = BeginRunScope(ApiRunTag);
+
+            try
+            {
+                return await RunAsync(vendorId ?? string.Empty, startDate, endDate, null, cancellationToken);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                logger.LogError(ex, "Vendor API run failed.");
+                throw;
+            }
+        }
+        finally
+        {
+            _runLock.Release();
+        }
+    }
+
+    private IDisposable? BeginRunScope(string runTagName)
+    {
+        var runId = Guid.NewGuid().ToString("N")[..4];
+        return logger.BeginScope(new Dictionary<string, object>
+        {
+            ["RunTag"] = $"[{runTagName} {runId}] "
+        });
+    }
+
+    private async Task<SyncResult> RunAsync(
+        string vendorId, string startDate, string endDate,
+        (DateTime StartDate, DateTime EndDate)? runRecordRange, CancellationToken cancellationToken)
+    {
+        logger.LogInformation(
+            "Vendor run starting: VendorID='{VendorId}', Start_Date={StartDate}, End_Date={EndDate}.",
+            vendorId, startDate, endDate);
+
+        var allVendors = await GetAllVendors(startDate, endDate, vendorId, cancellationToken);
+        var vendors = allVendors.VendorDetailsSet.Results;
+
+        var errors = new List<string>();
+        var processed = 0;
+
+        foreach (var detail in vendors)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            if (!long.TryParse(detail.VendorId, out var numericVendorId))
+            {
+                logger.LogWarning("Vendor {VendorId}: VendorID is not numeric, skipped.", detail.VendorId);
+                errors.Add($"Vendor {detail.VendorId}: VendorID is not numeric, skipped.");
+                continue;
+            }
+
+            try
+            {
+                await SaveVendor(numericVendorId, detail, cancellationToken);
+                processed++;
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                logger.LogError(ex, "Vendor sync failed for VendorID {VendorId}.", detail.VendorId);
+                errors.Add($"Vendor {detail.VendorId}: {ex.Message}");
+            }
+        }
+
+        logger.LogInformation(
+            "Vendor staging completed: {Fetched} fetched, {Processed} processed, {Failed} failed.",
+            vendors.Count, processed, errors.Count);
+
+        if (runRecordRange is { } range)
+        {
+            await InsertRunRecordAsync(range.StartDate, range.EndDate, cancellationToken);
+        }
+
+        await using (var storedProcedureConnection = new SqlConnection(_databaseOptions.ConnectionString))
+        {
+            await storedProcedureConnection.OpenAsync(cancellationToken);
+
+            await using var promotionCommand = new SqlCommand("dbo.SHK_INT_VENDOR_IB_PRC", storedProcedureConnection)
+            {
+                CommandType = CommandType.StoredProcedure
+            };
+
+            await promotionCommand.ExecuteNonQueryAsync(cancellationToken);
+            logger.LogInformation("SHK_INT_VENDOR_IB_PRC executed.");
+        }
+
+        await LogStaleStagingErrorsAsync(cancellationToken);
+
+        return new SyncResult(vendors.Count, processed, errors.Count, errors);
+    }
 
     public static (DateTime StartDate, DateTime EndDate) ResolveSyncDateRange(
         ShkrVendorOptions options, DateTime utcNow, DateTime? lastRunEndDateUtc)
@@ -191,13 +269,14 @@ public sealed class ShkrVendorService(
         return staleVendorIds;
     }
 
-    public async Task<VendorHeaderData> GetAllVendors(string startDate, string endDate, CancellationToken cancellationToken = default)
+    public async Task<VendorHeaderData> GetAllVendors(
+        string startDate, string endDate, string vendorId = "", CancellationToken cancellationToken = default)
     {
         var requestUri = $"/sap/opu/odata/SAP/Z_VEND_DETAILS_SRV/HEADERSet?sap-client={_shkrSapOptions.ShkrSapClient}";
 
         var requestBody = new
         {
-            VendorID = string.Empty,
+            VendorID = vendorId,
             Start_Date = startDate,
             End_Date = endDate,
             VendorDetailsSet = new object[]
