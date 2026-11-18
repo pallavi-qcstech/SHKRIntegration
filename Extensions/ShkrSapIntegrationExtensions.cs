@@ -41,6 +41,14 @@ public static class ShkrSapIntegrationExtensions
             .AddHttpMessageHandler<ShkrSapRequestResponseLoggingHandler>();
     }
 
+    public static IHttpClientBuilder AddShkrSapHttpClientLargeRead(this IServiceCollection services, string clientName, TimeSpan timeout)
+    {
+        return services.AddHttpClient(clientName, ConfigureShkrSapClient)
+            .ConfigureHttpClient(c => c.Timeout = timeout)
+            .ConfigurePrimaryHttpMessageHandler(CreateShkrSapHandler)
+            .AddHttpMessageHandler<ShkrSapCsrfTokenHandler>();
+    }
+
     private static void ConfigureShkrSapClient(IServiceProvider sp, HttpClient client)
     {
         var options = sp.GetRequiredService<IOptions<ShkrSapApiOptions>>().Value;
