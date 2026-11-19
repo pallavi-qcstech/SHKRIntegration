@@ -41,6 +41,7 @@ builder.Services.AddProjectRequisition();
 builder.Services.AddPurchaseOrder();
 builder.Services.AddChangeOrder();
 builder.Services.AddReservations();
+builder.Services.AddNetworkActivities(builder.Configuration);
 
 builder.Services.AddIntegrationHealthChecks();
 
