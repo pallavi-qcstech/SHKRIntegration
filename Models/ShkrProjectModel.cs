@@ -10,7 +10,9 @@ public sealed partial class ODataDateTimeConverter : JsonConverter<DateTime?>
     [GeneratedRegex(@"^/Date\((-?\d+)\)/$")]
     private static partial Regex DatePattern();
 
-    private const string ZeroDate = "0000-00-00";
+    private static readonly string[] ZeroDates = ["0000-00-00", "00000000"];
+
+    private static readonly string[] SapDateFormats = ["yyyy-MM-dd", "yyyyMMdd"];
 
     public override DateTime? Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
     {
@@ -19,8 +21,8 @@ public sealed partial class ODataDateTimeConverter : JsonConverter<DateTime?>
             return null;
         }
 
-        var raw = reader.GetString();
-        if (string.IsNullOrEmpty(raw) || raw == ZeroDate)
+        var raw = reader.GetString()?.Trim();
+        if (string.IsNullOrEmpty(raw) || ZeroDates.Contains(raw))
         {
             return null;
         }
@@ -30,6 +32,11 @@ public sealed partial class ODataDateTimeConverter : JsonConverter<DateTime?>
         {
             var epochMilliseconds = long.Parse(match.Groups[1].Value);
             return DateTimeOffset.FromUnixTimeMilliseconds(epochMilliseconds).UtcDateTime;
+        }
+
+        if (DateTime.TryParseExact(raw, SapDateFormats, CultureInfo.InvariantCulture, DateTimeStyles.None, out var exact))
+        {
+            return exact;
         }
 
         if (DateTime.TryParse(raw, CultureInfo.InvariantCulture, DateTimeStyles.None, out var parsed))
@@ -63,7 +70,7 @@ public sealed class Proj
     [JsonConverter(typeof(ODataDateTimeConverter))]
     public DateTime? StartDate { get; set; }
 
-    [JsonPropertyName("Creatdon")]
+    [JsonPropertyName("Createdon")]
     [JsonConverter(typeof(ODataDateTimeConverter))]
     public DateTime? CreatedOn { get; set; }
 

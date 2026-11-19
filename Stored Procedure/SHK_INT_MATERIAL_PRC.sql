@@ -1,12 +1,13 @@
 USE [PMWeb]
 GO
 
-/****** Object:  StoredProcedure [dbo].[SHK_INT_MATERIAL_PRC]    Script Date: 10/16/2026 3:08:47 PM ******/
+/****** Object:  StoredProcedure [dbo].[SHK_INT_MATERIAL_PRC]    Script Date: 11/19/2026 1:25:37 PM ******/
 SET ANSI_NULLS ON
 GO
 
 SET QUOTED_IDENTIFIER ON
 GO
+
 
 /* =====================================================================================
    Procedure   : dbo.SHK_INT_MATERIAL_PRC
@@ -81,7 +82,11 @@ BEGIN
         stg.purchase_order_unit_of_measure,
         NULLIF(stg.department, 'NULL')            AS department,
         NULLIF(stg.division, 'NULL')              AS division,
-        stg.product_hierarchy,
+        /*LEFT(
+				product_hierarchy, 
+				LEN(product_hierarchy) - PATINDEX('%[^-]%', REVERSE(product_hierarchy) + 'X') + 1
+			)*/
+		REPLACE(product_hierarchy, '-', '') product_hierarchy,
         NULLIF(stg.lab_office, 'NULL')            AS lab_office,
         CAST(NULL AS INT) AS CategoryId,
         CAST(NULL AS INT) AS TypeId,
@@ -305,7 +310,7 @@ BEGIN
         AND rootp.GroupName = CAST(s.company_code AS VARCHAR(50))
     JOIN #ItemGroupPath p
          ON p.RootId = rootp.Id
-        AND p.FullCode = s.product_hierarchy;
+        AND p.FullCode = REPLACE(s.product_hierarchy, '-', '') ;
 
     -- Company code root not found at all under any ItemGroups top level.
     UPDATE realstg
@@ -411,5 +416,4 @@ BEGIN
 
 END;
 GO
-
 

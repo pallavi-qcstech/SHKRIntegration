@@ -10,7 +10,8 @@ public static class VendorServiceExtensions
         services.AddShkrSapHttpClient(ShkrVendorService.ShkrSapClientName);
 
         services.Configure<ShkrVendorOptions>(configuration.GetSection(ShkrVendorOptions.SectionName));
-        services.AddHostedService<ShkrVendorService>();
+        services.AddSingleton<ShkrVendorService>();
+        services.AddHostedService(sp => sp.GetRequiredService<ShkrVendorService>());
 
         return services;
     }

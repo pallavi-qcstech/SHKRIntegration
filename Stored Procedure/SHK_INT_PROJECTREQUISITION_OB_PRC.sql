@@ -24,9 +24,19 @@ Change Log
                        to its PR line.
 03/11/26 - Pallavi M - doc_type (BSART on the header, DOC_TYPE on every line) is read from the
                        project's "PR Document Type" field (dbo.Specifications, EntityTypeId 1 =
-                       Projects, SpecificationTemplateId 47), not Programs.SpecField5. 
-                       (SAP sends the value to PMWeb through the Project Hierarchy API).
-                       
+                       Projects, SpecificationTemplateId 47), not Programs.SpecField5.
+                       (SAP sends the value to PMWeb through the Project API).
+16/11/26 - Pallavi M - On success the workflow is no longer completed here: the queue row is set to
+                       'P' (Pending SAP approval) and SHK_INT_APPROVE_PR_IB_PRC completes or returns it.
+                       Only this run's queue row is updated. A PreBid whose PR is pending approval is
+                       not sent again and its workflow is not returned.
+19/11/26 - Pallavi M - The 'P' row also gets erp_txn_number = SAP PR number, so that
+                       SHK_INT_APPROVE_PR_IB_PRC picks it up.
+19/11/26 - Pallavi M - Line SHORT_TEXT now comes from the line description (Estimate_PreBidDetails.Description)
+                       instead of the header (Estimate_PreBids.Description), cut to SAP's 40 characters.
+                       The header staging description is not changed. A line with a blank description
+                       stops the PR before SAP is called (error, workflow returned, RETURN -1).
+
 */
 
 ALTER PROC [dbo].[SHK_INT_PROJECTREQUISITION_OB_PRC]
@@ -45,6 +55,7 @@ BEGIN
     DECLARE @sap_pr_id VARCHAR(10);
     DECLARE @con_error VARCHAR(MAX);
     DECLARE @bad_acct_lines VARCHAR(MAX);
+    DECLARE @blank_text_lines VARCHAR(MAX);   -- 19/11/26 lines without a description (SHORT_TEXT)
     DECLARE @pr_doc_type NVARCHAR(200);
     DECLARE @bad_doc_type BIT;
     DECLARE @existing_pr NVARCHAR(100);
@@ -53,6 +64,7 @@ BEGIN
     DECLARE @DocumentId BIGINT;
     DECLARE @CurrStepId BIGINT;
     DECLARE @PrevStepId BIGINT;
+    DECLARE @queue_record_id INT;
 
    
     DECLARE @ErrorNumber INT;
@@ -85,10 +97,13 @@ BEGIN
 
        ---- Get Workflow Information-----------
 
-        SELECT @CurrStepId = wf_curr_step_id, @DocumentId = wf_document_id
+        ---- Only this run's own queue row (N/I, the latest one) is read and updated here.
+        SELECT TOP 1 @queue_record_id = record_id, @CurrStepId = wf_curr_step_id, @DocumentId = wf_document_id
         FROM dbo.xx_integration_tbl
         WHERE tran_id = @TRAN_ID
-          AND tran_type = @txn_type;
+          AND tran_type = @txn_type
+          AND status IN ('N', 'I')
+        ORDER BY record_id DESC;
 
         IF @DocumentId IS NOT NULL
         BEGIN
@@ -112,7 +127,7 @@ BEGIN
 
             UPDATE dbo.xx_integration_tbl
             SET status = 'E', error_msg = @ERROR_DESC, last_update_date = GETDATE()
-            WHERE tran_id = @TRAN_ID AND tran_type = @txn_type;
+            WHERE record_id = @queue_record_id;
 
             IF @DocumentId IS NOT NULL
             BEGIN
@@ -139,39 +154,6 @@ BEGIN
             RETURN -1;
         END
 
-        IF NOT EXISTS (SELECT 1 FROM dbo.Estimate_PreBidDetails WHERE PreBidId = @TRAN_ID)
-        BEGIN
-            SET @ERROR_DESC = 'Estimate_PreBids ' + CAST(@TRAN_ID AS VARCHAR(20)) + ' has no Estimate_PreBidDetails lines.';
-
-            UPDATE dbo.xx_integration_tbl
-            SET status = 'E', error_msg = @ERROR_DESC, last_update_date = GETDATE()
-            WHERE tran_id = @TRAN_ID AND tran_type = @txn_type;
-
-            IF @DocumentId IS NOT NULL
-            BEGIN
-                EXEC dbo.Workflow_ExecuteDocumentAction
-                    @StepActionGUID = '00000000-0000-0000-0000-000000000000'
-                    ,@ActionTypeId = 3
-                    ,@DeliveredToStepId = @PrevStepId
-                    ,@DelegateToIds = N'0'
-                    ,@TeamInputIds = N'0'
-                    ,@DocumentId = @DocumentId
-                    ,@ActionComment = @ERROR_DESC
-                    ,@UserId = 5
-                    ,@TeamInputCanEditRecord = 0
-                    ,@TeamInputCanEditNotes = 0
-                    ,@TeamInputCanEditAttachments = 0
-                    ,@ActionSource = N'Website';
-
-                EXEC dbo.Workflow_CalculateCurrentPendingStepId @DocumentId = @DocumentId;
-                EXEC dbo.Workflow_UpdateDocumentCurrentPendingStepId @DocumentId = @DocumentId, @CurrentPendingStepId = @PrevStepId;
-                EXEC dbo.Workflow_RecalculateDueDate @DocumentId = @DocumentId;
-            END
-
-            SELECT @ERROR_DESC AS Message;
-            RETURN -2;
-        END
-
         ----------Duplicate Guard---------
         ---- Z_PR_CREATION_SRV has no duplicate protection: sending this PreBid again would create a
         ---- second PR in SAP. Rejected before anything is staged.
@@ -188,13 +170,29 @@ BEGIN
                           WHERE l.hdr_record_id = h.record_id AND l.prebid_id = @TRAN_ID)
             ORDER BY h.record_id DESC;
 
+        ---- PR pending SAP approval: not sent again and the workflow is left where it is.
+        ---- Only this run's queue row is closed.
+        IF @existing_pr IS NOT NULL
+           AND EXISTS (SELECT 1 FROM dbo.xx_integration_tbl
+                       WHERE tran_id = @TRAN_ID AND tran_type = @txn_type AND status = 'P')
+        BEGIN
+            SET @ERROR_DESC = 'SAP PR ' + @existing_pr + ' already created for this PreBid and is Pending SAP approval - not sent again.';
+
+            UPDATE dbo.xx_integration_tbl
+            SET status = 'E', error_msg = @ERROR_DESC, last_update_date = GETDATE()
+            WHERE record_id = @queue_record_id;
+
+            SELECT @ERROR_DESC AS Message;
+            RETURN -1;
+        END
+
         IF @existing_pr IS NOT NULL
         BEGIN
             SET @ERROR_DESC = 'SAP PR ' + @existing_pr + ' already created for this PreBid - not sent again.';
 
             UPDATE dbo.xx_integration_tbl
             SET status = 'E', error_msg = @ERROR_DESC, last_update_date = GETDATE()
-            WHERE tran_id = @TRAN_ID AND tran_type = @txn_type;
+            WHERE record_id = @queue_record_id;
 
             IF @DocumentId IS NOT NULL
             BEGIN
@@ -218,7 +216,7 @@ BEGIN
             END
 
             SELECT @ERROR_DESC AS Message;
-            RETURN -10;
+            RETURN -1;
         END
 
         -- PR Document Type from the PreBid's project: dbo.SpecificationsTemplate 47
@@ -259,7 +257,7 @@ BEGIN
 
             UPDATE dbo.xx_integration_tbl
             SET status = 'E', error_msg = @ERROR_DESC, last_update_date = GETDATE()
-            WHERE tran_id = @TRAN_ID AND tran_type = @txn_type;
+            WHERE record_id = @queue_record_id;
 
             IF @DocumentId IS NOT NULL
             BEGIN
@@ -283,7 +281,7 @@ BEGIN
             END
 
             SELECT @ERROR_DESC AS Message;
-            RETURN -3;
+            RETURN -1;
         END
 
         --------- Stage Line Data -------------
@@ -308,7 +306,7 @@ BEGIN
 
             UPDATE dbo.xx_integration_tbl
             SET status = 'E', error_msg = @ERROR_DESC, last_update_date = GETDATE()
-            WHERE tran_id = @TRAN_ID AND tran_type = @txn_type;
+            WHERE record_id = @queue_record_id;
 
             IF @DocumentId IS NOT NULL
             BEGIN
@@ -332,7 +330,7 @@ BEGIN
             END
 
             SELECT @ERROR_DESC AS Message;
-            RETURN -3;
+            RETURN -1;
         END
 
         ;WITH WbsCode AS (
@@ -354,7 +352,7 @@ BEGIN
             d.Id,              -- prebid_detail_id: the exact line this row is staged from (for the MfrNumber write-back)
             RIGHT('00000' + CAST(ROW_NUMBER() OVER (ORDER BY d.LineNumber) * 10 AS VARCHAR(5)), 5),
             NULLIF(@pr_doc_type, ''),   -- doc_type (DOC_TYPE): same value as the header
-            LEFT(pb.Description, 40),
+            LEFT(ISNULL(d.Description, ''), 40),   -- short_text: line description, SAP SHORT_TEXT max 40 (19/11/26)
             '',
             pb.SpecField3,
             pgm.SpecField1,
@@ -451,7 +449,7 @@ BEGIN
 
             UPDATE dbo.xx_integration_tbl
             SET status = 'E', error_msg = @ERROR_DESC, last_update_date = GETDATE()
-            WHERE tran_id = @TRAN_ID AND tran_type = @txn_type;
+            WHERE record_id = @queue_record_id;
 
             IF @DocumentId IS NOT NULL
             BEGIN
@@ -475,7 +473,7 @@ BEGIN
             END
 
             SELECT @ERROR_DESC AS Message;
-            RETURN -4;
+            RETURN -1;
         END
 
         END TRY
@@ -495,7 +493,7 @@ BEGIN
 
             UPDATE dbo.xx_integration_tbl
             SET status = 'E', error_msg = @ERROR_DESC, last_update_date = GETDATE()
-            WHERE tran_id = @TRAN_ID AND tran_type = @txn_type;
+            WHERE record_id = @queue_record_id;
 
             IF @DocumentId IS NOT NULL
             BEGIN
@@ -519,7 +517,7 @@ BEGIN
             END
 
             SELECT @ERROR_DESC AS Message;
-            RETURN -7;
+            RETURN -1;
         END CATCH
 
 
@@ -543,7 +541,7 @@ BEGIN
 
             UPDATE dbo.xx_integration_tbl
             SET status = 'E', error_msg = @ERROR_DESC, last_update_date = GETDATE()
-            WHERE tran_id = @TRAN_ID AND tran_type = @txn_type;
+            WHERE record_id = @queue_record_id;
 
             IF @DocumentId IS NOT NULL
             BEGIN
@@ -567,7 +565,7 @@ BEGIN
             END
 
             SELECT @ERROR_DESC AS Message;
-            RETURN -5;
+            RETURN -1;
         END
 
         ----------Mandatory Field Validation---------
@@ -594,7 +592,7 @@ BEGIN
 
             UPDATE dbo.xx_integration_tbl
             SET status = 'E', error_msg = @ERROR_DESC, last_update_date = GETDATE()
-            WHERE tran_id = @TRAN_ID AND tran_type = @txn_type;
+            WHERE record_id = @queue_record_id;
 
             IF @DocumentId IS NOT NULL
             BEGIN
@@ -618,7 +616,60 @@ BEGIN
             END
 
             SELECT @ERROR_DESC AS Message;
-            RETURN -5;
+            RETURN -1;
+        END
+
+        ----------Line description (SHORT_TEXT) Validation---------  19/11/26
+        ---- Every line needs a description; it is sent to SAP as SHORT_TEXT (first 40 characters).
+
+        SET @blank_text_lines = STUFF((
+            SELECT ', ' + ISNULL(l.prebid_line_no, '?')
+            FROM dbo.xx_projectrequisition_line_stg_tbl_ob l
+            WHERE l.hdr_record_id = @hdr_record_id
+              AND ISNULL(LTRIM(RTRIM(l.short_text)), '') = ''
+            ORDER BY l.prebid_line_no
+            FOR XML PATH(''), TYPE).value('.', 'VARCHAR(MAX)'), 1, 2, '');
+
+        IF @blank_text_lines IS NOT NULL
+        BEGIN
+            SET @ERROR_DESC = 'Item description is blank on line(s): ' + @blank_text_lines
+                + '. Each PR line needs a description (sent to SAP as short text, max 40 characters).';
+
+            UPDATE dbo.xx_projectrequisition_hdr_stg_tbl_ob
+            SET process_status = 'E', error_msg = LEFT(@ERROR_DESC, 2000), last_update_date = GETDATE()
+            WHERE record_id = @hdr_record_id;
+
+            UPDATE dbo.xx_projectrequisition_line_stg_tbl_ob
+            SET process_status = 'E', error_msg = LEFT(@ERROR_DESC, 2000), last_update_date = GETDATE()
+            WHERE hdr_record_id = @hdr_record_id;
+
+            UPDATE dbo.xx_integration_tbl
+            SET status = 'E', error_msg = @ERROR_DESC, last_update_date = GETDATE()
+            WHERE record_id = @queue_record_id;
+
+            IF @DocumentId IS NOT NULL
+            BEGIN
+                EXEC dbo.Workflow_ExecuteDocumentAction
+                    @StepActionGUID = '00000000-0000-0000-0000-000000000000'
+                    ,@ActionTypeId = 3
+                    ,@DeliveredToStepId = @PrevStepId
+                    ,@DelegateToIds = N'0'
+                    ,@TeamInputIds = N'0'
+                    ,@DocumentId = @DocumentId
+                    ,@ActionComment = @ERROR_DESC
+                    ,@UserId = 5
+                    ,@TeamInputCanEditRecord = 0
+                    ,@TeamInputCanEditNotes = 0
+                    ,@TeamInputCanEditAttachments = 0
+                    ,@ActionSource = N'Website';
+
+                EXEC dbo.Workflow_CalculateCurrentPendingStepId @DocumentId = @DocumentId;
+                EXEC dbo.Workflow_UpdateDocumentCurrentPendingStepId @DocumentId = @DocumentId, @CurrentPendingStepId = @PrevStepId;
+                EXEC dbo.Workflow_RecalculateDueDate @DocumentId = @DocumentId;
+            END
+
+            SELECT @ERROR_DESC AS Message;
+            RETURN -1;
         END
 
         ----------Account Assignment Validation---------
@@ -668,7 +719,7 @@ BEGIN
 
             UPDATE dbo.xx_integration_tbl
             SET status = 'E', error_msg = @ERROR_DESC, last_update_date = GETDATE()
-            WHERE tran_id = @TRAN_ID AND tran_type = @txn_type;
+            WHERE record_id = @queue_record_id;
 
             IF @DocumentId IS NOT NULL
             BEGIN
@@ -692,7 +743,7 @@ BEGIN
             END
 
             SELECT @ERROR_DESC AS Message;
-            RETURN -8;
+            RETURN -1;
         END
 
         --------Call Shaker API-----------------------
@@ -707,9 +758,10 @@ BEGIN
 
         IF @API_STATUS = 'S' AND @sap_pr_id IS NOT NULL
         BEGIN
+            ---- 'P' = pending SAP approval: the workflow stays at the Integration step.
             UPDATE dbo.xx_integration_tbl
-            SET status = 'S', error_msg = 'Project Requisition created successfully, SAP PR ' + @sap_pr_id, last_update_date = GETDATE()
-            WHERE tran_id = @TRAN_ID AND tran_type = @txn_type;
+            SET status = 'P', erp_txn_number = @sap_pr_id, error_msg = 'Project Requisition created in SAP, PR ' + @sap_pr_id + ' - Pending SAP approval', last_update_date = GETDATE()
+            WHERE record_id = @queue_record_id;
 
             -- Write the SAP-assigned PR number (BANFN) back into the PMWeb source entity, header level
             UPDATE dbo.Estimate_PreBids
@@ -736,28 +788,7 @@ BEGIN
                 INSERT INTO dbo.Specifications (EntityTypeId, EntityId, SpecificationTemplateId, Measure, Notes, ListItemId)
                 VALUES (244, @TRAN_ID, 45, @sap_pr_id, '', -1);
 
-            IF @DocumentId IS NOT NULL
-            BEGIN
-                EXEC dbo.Workflow_ExecuteDocumentAction
-                    @StepActionGUID = '00000000-0000-0000-0000-000000000000'
-                    ,@ActionTypeId = 7
-                    ,@DeliveredToStepId = 0
-                    ,@DelegateToIds = N'0'
-                    ,@TeamInputIds = N'0'
-                    ,@DocumentId = @DocumentId
-                    ,@ActionComment = 'Project Requisition created successfully'
-                    ,@UserId = 5
-                    ,@TeamInputCanEditRecord = 0
-                    ,@TeamInputCanEditNotes = 0
-                    ,@TeamInputCanEditAttachments = 0
-                    ,@ActionSource = N'Website';
-
-                EXEC dbo.Workflow_CalculateCurrentPendingStepId @DocumentId = @DocumentId;
-                EXEC dbo.Workflow_UpdateDocumentCurrentPendingStepId @DocumentId = @DocumentId, @CurrentPendingStepId = 0;
-                EXEC dbo.Workflow_UpdateWorkflowDocumentStatus @DocumentId = @DocumentId, @ActionTypeId = 7, @StepId = @CurrStepId, @UserId = 5, @ChangeLastAction = 0;
-            END
-
-            SELECT 'Project Requisition created successfully' AS Message, @sap_pr_id AS SapPrId, @hdr_record_id AS HdrRecordId;
+            SELECT 'Project Requisition created in SAP - Pending SAP approval' AS Message, @sap_pr_id AS SapPrId, @hdr_record_id AS HdrRecordId;
         END
         ELSE
         BEGIN
@@ -767,7 +798,7 @@ BEGIN
 
             UPDATE dbo.xx_integration_tbl
             SET status = 'E', error_msg = @ERROR_DESC, last_update_date = GETDATE()
-            WHERE tran_id = @TRAN_ID AND tran_type = @txn_type;
+            WHERE record_id = @queue_record_id;
 
             IF @DocumentId IS NOT NULL
             BEGIN
@@ -791,7 +822,7 @@ BEGIN
             END
 
             SELECT @ERROR_DESC AS Message, @hdr_record_id AS HdrRecordId;
-            RETURN -6;
+            RETURN -2;
         END
 
     END TRY
@@ -828,7 +859,7 @@ BEGIN
 
             UPDATE dbo.xx_integration_tbl
             SET status = 'E', error_msg = @ERROR_DESC, last_update_date = GETDATE()
-            WHERE tran_id = @TRAN_ID AND tran_type = @txn_type;
+            WHERE record_id = @queue_record_id;
 
             IF @DocumentId IS NOT NULL AND @PrevStepId IS NOT NULL
             BEGIN
@@ -852,16 +883,16 @@ BEGIN
             END
 
             SELECT @ERROR_DESC AS Message;
-            RETURN -9;
+            RETURN -2;
         END
 
-        -- PR already created in SAP: finish the success steps that the error interrupted
+        -- PR already created in SAP: finish the write-backs that the error interrupted, then wait for SAP approval
         -- (never send it back - a resubmit would create a second PR in SAP)
         BEGIN TRY
             UPDATE dbo.xx_integration_tbl
-            SET status = 'S', error_msg = 'Project Requisition created successfully, SAP PR ' + @sap_pr_id
-                + ' (completed after error: ' + @ErrorMessage + ')', last_update_date = GETDATE()
-            WHERE tran_id = @TRAN_ID AND tran_type = @txn_type;
+            SET status = 'P', erp_txn_number = @sap_pr_id, error_msg = 'Project Requisition created in SAP, PR ' + @sap_pr_id
+                + ' - Pending SAP approval (write-back completed after error: ' + @ErrorMessage + ')', last_update_date = GETDATE()
+            WHERE record_id = @queue_record_id;
 
             UPDATE dbo.Estimate_PreBids
             SET SpecField4 = @sap_pr_id
@@ -884,47 +915,26 @@ BEGIN
                 INSERT INTO dbo.Specifications (EntityTypeId, EntityId, SpecificationTemplateId, Measure, Notes, ListItemId)
                 VALUES (244, @TRAN_ID, 45, @sap_pr_id, '', -1);
 
-            IF @DocumentId IS NOT NULL
-            BEGIN
-                EXEC dbo.Workflow_ExecuteDocumentAction
-                    @StepActionGUID = '00000000-0000-0000-0000-000000000000'
-                    ,@ActionTypeId = 7
-                    ,@DeliveredToStepId = 0
-                    ,@DelegateToIds = N'0'
-                    ,@TeamInputIds = N'0'
-                    ,@DocumentId = @DocumentId
-                    ,@ActionComment = 'Project Requisition created successfully'
-                    ,@UserId = 5
-                    ,@TeamInputCanEditRecord = 0
-                    ,@TeamInputCanEditNotes = 0
-                    ,@TeamInputCanEditAttachments = 0
-                    ,@ActionSource = N'Website';
-
-                EXEC dbo.Workflow_CalculateCurrentPendingStepId @DocumentId = @DocumentId;
-                EXEC dbo.Workflow_UpdateDocumentCurrentPendingStepId @DocumentId = @DocumentId, @CurrentPendingStepId = 0;
-                EXEC dbo.Workflow_UpdateWorkflowDocumentStatus @DocumentId = @DocumentId, @ActionTypeId = 7, @StepId = @CurrStepId, @UserId = 5, @ChangeLastAction = 0;
-            END
-
-            SELECT 'Project Requisition created successfully (completed after error: ' + @ErrorMessage + ')' AS Message,
+            SELECT 'Project Requisition created in SAP - Pending SAP approval (write-back completed after error: ' + @ErrorMessage + ')' AS Message,
                    @sap_pr_id AS SapPrId, @hdr_record_id AS HdrRecordId;
-            RETURN -9;  -- same code for every unexpected error ; the message tells the cases apart
+            RETURN -2;  -- same code for every unexpected error ; the message tells the cases apart
         END TRY
         BEGIN CATCH
             -- Completion failed : Do NOT re-run this PreBid, it would create a second PR in SAP.
           
             SET @ErrorMessage = ERROR_MESSAGE();
-            SET @ErrorDesc = 'PR ' + @sap_pr_id + ' created in SAP but completion failed - complete manually, do not re-send';
+            SET @ErrorDesc = 'PR ' + @sap_pr_id + ' created in SAP but the write-back failed - complete it manually, do not re-send';
 
             INSERT INTO dbo.xx_int_ErrorLog (ErrorNumber, ErrorProcedure, ErrorLine, ErrorMessage, TranId, ErrorDate, ErrorDesc)
             VALUES (ERROR_NUMBER(), ERROR_PROCEDURE(), ERROR_LINE(), @ErrorMessage, CAST(@TRAN_ID AS VARCHAR(100)), GETDATE(), @ErrorDesc);
 
-            -- status stays 'S' (the PR exists); the message shows it still needs completing
+            -- the queue status is left as it is (the PR exists); the message shows it still needs completing
             UPDATE dbo.xx_integration_tbl
             SET error_msg = @ErrorDesc + ': ' + @ErrorMessage, last_update_date = GETDATE()
-            WHERE tran_id = @TRAN_ID AND tran_type = @txn_type;
+            WHERE record_id = @queue_record_id;
 
             SELECT @ErrorDesc + ': ' + @ErrorMessage AS Message, @sap_pr_id AS SapPrId, @hdr_record_id AS HdrRecordId;
-            RETURN -9;
+            RETURN -2;
         END CATCH
     END CATCH
 

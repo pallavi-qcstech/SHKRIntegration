@@ -30,8 +30,9 @@ Per VO line (line_action) -  CommitmentCODetails.CommitmentDetailId
   DELETE - the line's delete box (CommitmentCODetails.Field1 = 'True') is ticked: only the item number +
            DeleteInd X are sent, no quantity check (the rest of the line
            is ignored); the line must point to an item on the SAP PO.
-Every ADD / UPDATE line carries the Commitment header delivery date (CostManagement_Commitments
-.ScheduledDeliveryDate, as PO Create) on schedule line 0001.
+Every ADD / UPDATE line carries the Change Order header Scheduled Delivery Date (CommitmentCOs.SpecField1,
+milliseconds since 01.01.1970) on schedule line 0001. It is mandatory on every Change Order, must be a
+valid date and not before today (else RETURN -1).
 Not sent: account / WBS change of an existing item. An UPDATE line must have the cost code of its
 PO line (the WBS is not compared).
 
@@ -43,7 +44,7 @@ Change Log
 04/11/26 - Pallavi M - Delete re-added as a line-level delete box (DeleteInd X); CO header delivery date
                        sent on every ADD / UPDATE line
 04/11/26 - Pallavi M - VO line link : CommitmentDetailId only (CommitmentCoDetailId no longer used);
-                       new lines must have a distinct Cost Code + Description + WBS (RETURN -5)
+                       new lines must have a distinct Cost Code + Description + WBS (RETURN -1)
 04/11/26 - Pallavi M - Linked line check : cost code only (WBS difference no longer rejected)
 05/11/26 - Pallavi M - Only the total quantity is staged (qty_delta / prior_quantity removed);
                        the quantity checks read the staged total
@@ -51,7 +52,12 @@ Change Log
                        its items there; CommitmentDetails.Field10 no longer read for it[To be verified]
 06/11/26 - Pallavi M - Delete box = CommitmentCODetails.Field1 ('True' = delete), also for the
                        "already deleted by an earlier VO" check
-
+11/11/26 - Pallavi M - Delivery date from the Change Order header (CommitmentCOs.SpecField1) instead of
+                       the Commitment; mandatory on every Change Order, invalid or past date rejected (-1)
+12/11/26 - Pallavi M - ADD lines: mat_grp from the PreBid the PO's PR was created from
+                       (Estimate_PreBids.SpecField3, as PO Create) instead of 'S000001'; blank rejected (-1).
+                       A new item has no PR item behind it, so this is for consistency with the PO's
+                       other items (no SAP "differs from PR" warning involved). 
 */
 
 CREATE OR ALTER PROC [dbo].[SHK_INT_CHANGEORDER_OB_PRC]
@@ -76,7 +82,11 @@ BEGIN
     DECLARE @existing_co NVARCHAR(255);
     DECLARE @max_po_item INT;
     DECLARE @co_delivery_date VARCHAR(10);
+    DECLARE @co_date_raw NVARCHAR(4000);
+    DECLARE @co_date_ms BIGINT;
+    DECLARE @co_date DATE;
     DECLARE @bad_lines VARCHAR(MAX);
+    DECLARE @NL CHAR(2) = CHAR(13) + CHAR(10);
     DECLARE @acct_error VARCHAR(MAX);
 
     -- Must match the tran_type SHK_INT_START_INTEGRATION writes for Commitment COs 
@@ -198,7 +208,7 @@ BEGIN
             END
 
             SELECT @ERROR_DESC AS Message;
-            RETURN -2;
+            RETURN -1;
         END
 
         ----------Duplicate Guard---------
@@ -246,7 +256,7 @@ BEGIN
             END
 
             SELECT @ERROR_DESC AS Message;
-            RETURN -10;
+            RETURN -1;
         END
 
         ----------Parent PO Validation---------
@@ -256,11 +266,18 @@ BEGIN
         SELECT @commitment_id = c.Id,
                @po_status = c.DocStatusId,
                @po_number = NULLIF(LTRIM(RTRIM(c.Reference)), ''),
-               -- delivery date: Commitment header Scheduled Delivery Date (DD.MM.YYYY), same as PO Create
-               @co_delivery_date = CONVERT(VARCHAR(10), c.ScheduledDeliveryDate, 104)
+               -- delivery date: Change Order header Scheduled Delivery Date = CommitmentCOs.SpecField1,
+               -- stored by PMWeb as milliseconds since 01.01.1970 (UTC), e.g. 1794355200000 = 11.11.2026
+               @co_date_raw = NULLIF(LTRIM(RTRIM(CAST(co.SpecField1 AS NVARCHAR(4000)))), '')
         FROM dbo.CostManagement_CommitmentCOs co
         JOIN dbo.CostManagement_Commitments c ON c.Id = co.CommitmentId
         WHERE co.Id = @TRAN_ID;
+
+        SET @co_date_ms = CASE WHEN @co_date_raw NOT LIKE '%[^0-9]%' AND LEN(@co_date_raw) BETWEEN 1 AND 13
+                               THEN CAST(@co_date_raw AS BIGINT) END;
+        SET @co_date = CASE WHEN @co_date_ms > 0
+                            THEN DATEADD(DAY, CAST(@co_date_ms / 86400000 AS INT), CAST('19700101' AS DATE)) END;
+        SET @co_delivery_date = CONVERT(VARCHAR(10), @co_date, 104);
 
         IF @commitment_id IS NULL OR ISNULL(@po_status, 0) <> 5 OR @po_number IS NULL OR LEN(@po_number) > 10
         BEGIN
@@ -297,7 +314,7 @@ BEGIN
             END
 
             SELECT @ERROR_DESC AS Message;
-            RETURN -5;
+            RETURN -1;
         END
 
         ----------Highest SAP item number on the PO---------
@@ -355,7 +372,7 @@ BEGIN
                 END
 
                 SELECT @ERROR_DESC AS Message;
-                RETURN -3;
+                RETURN -1;
             END
 
             SET @hdr_record_id = SCOPE_IDENTITY();
@@ -432,7 +449,7 @@ BEGIN
                 CASE WHEN act.LineAction = 'ADD' THEN coText.ShortText
                      WHEN act.LineAction = 'UPDATE' AND coText.ShortText <> '' AND coText.ShortText <> ISNULL(cl.PriorShortText, '')
                          THEN coText.ShortText END,
-                CASE WHEN act.LineAction = 'ADD' THEN 'S000001' END,       -- mat_grp: as PO Create
+                CASE WHEN act.LineAction = 'ADD' THEN NULLIF(LTRIM(RTRIM(pb.SpecField3)), '') END,  -- mat_grp: as PO Create (PreBid SpecField3)
                 CASE WHEN act.LineAction = 'ADD' THEN pgm.SpecField1 END,  -- plant: as PO Create
                 -- quantity (as ROSHN, only the total is staged): ADD = the VO quantity; UPDATE = new total
                 -- (register quantity + VO difference), only when the difference is not 0
@@ -444,7 +461,7 @@ BEGIN
                 CASE WHEN act.LineAction = 'ADD' THEN '1' END,
                 CASE WHEN act.LineAction = 'ADD' AND LEN(taxres.TaxCode) = 2 THEN taxres.TaxCode END,
                 CASE WHEN act.LineAction = 'ADD' THEN 'P' END,
-                -- schedule line: every ADD / UPDATE line, with the Commitment header delivery date
+                -- schedule line: every ADD / UPDATE line, with the Change Order header delivery date
                 CASE WHEN act.LineAction IN ('ADD', 'UPDATE') THEN '0001' END,
                 CASE WHEN act.LineAction IN ('ADD', 'UPDATE') THEN @co_delivery_date END,
                 -- account row: ADD lines only (an account change on an existing item is not sent, P4)
@@ -460,6 +477,10 @@ BEGIN
             JOIN dbo.CostManagement_Commitments c ON c.Id = co.CommitmentId
             JOIN dbo.Projects proj ON proj.Id = c.ProjectId
             JOIN dbo.Programs pgm ON pgm.Id = proj.ProgramId
+            -- PreBid the PO's PR was created from, as PO Create: Commitment.ProcurementId -> Estimate_Procurements
+            LEFT JOIN dbo.Estimate_Procurements prc ON prc.Id = c.ProcurementId
+            LEFT JOIN dbo.Estimate_PreBids pb
+                   ON pb.Id = COALESCE(NULLIF(prc.PrebidId, 0), NULLIF(prc.GeneratedFromPrebidId, 0))
             LEFT JOIN dbo.UOM uom ON uom.Id = cl.UOMId
             LEFT JOIN dbo.CostCodes cc ON cc.Id = cl.CostCodeId
             CROSS APPLY (
@@ -560,7 +581,7 @@ BEGIN
                 END
 
                 SELECT @ERROR_DESC AS Message;
-                RETURN -4;
+                RETURN -1;
             END
 
         END TRY
@@ -604,7 +625,7 @@ BEGIN
             END
 
             SELECT @ERROR_DESC AS Message;
-            RETURN -7;
+            RETURN -1;
         END CATCH
 
         ----------Line Validation---------
@@ -612,13 +633,19 @@ BEGIN
 
         SET @bad_lines = NULL;
 
-        SELECT @bad_lines = ISNULL(@bad_lines + ' ', '') + x.Msg
+        -- one line per failing check, as PO Create
+        SELECT @bad_lines = ISNULL(@bad_lines + @NL, '') + x.Msg
         FROM (
-            -- every ADD / UPDATE line sends the Commitment header delivery date
-            SELECT 0 AS Ord, CASE WHEN @co_delivery_date IS NULL AND EXISTS (
-                        SELECT 1 FROM dbo.xx_changeorder_line_stg_tbl_ob
-                        WHERE hdr_record_id = @hdr_record_id AND line_action IN ('ADD', 'UPDATE'))
-                      THEN 'Delivery date missing (Scheduled Delivery Date on the Commitment).' END AS Msg
+            -- Change Order header Scheduled Delivery Date: mandatory on every Change Order, a valid date,
+            -- not before today
+            SELECT 0 AS Ord, CASE
+                      WHEN @co_date_raw IS NULL
+                          THEN 'Delivery date missing (Scheduled Delivery Date on the Change Order).'
+                      WHEN @co_date IS NULL
+                          THEN 'Scheduled Delivery Date on the Change Order is not a valid date.'
+                      WHEN @co_date < CAST(GETDATE() AS DATE)
+                          THEN 'Scheduled Delivery Date on the Change Order (' + @co_delivery_date + ') is in the past - it must be today or a later date.'
+                      END AS Msg
             UNION ALL
             -- the line points to a PO line that has no SAP item in the register
             SELECT 1, 'Line(s) ' + STUFF((
@@ -760,6 +787,17 @@ BEGIN
                 FOR XML PATH(''), TYPE).value('.', 'VARCHAR(MAX)'), 1, 2, '')
                 + ': description, UOM, approved unit cost > 0 and tax code (Commitment SpecField1, e.g. ''V2-...'') are required.'
             UNION ALL
+            -- ADD lines: material group from the PreBid the PO's PR was created from, as PO Create
+            SELECT 13, 'New line(s) ' + STUFF((
+                SELECT ', ' + CAST(d.LineNumber AS VARCHAR(10))
+                FROM dbo.xx_changeorder_line_stg_tbl_ob l
+                JOIN dbo.CostManagement_CommitmentCODetails d ON d.Id = l.change_order_detail_id
+                WHERE l.hdr_record_id = @hdr_record_id AND l.line_action = 'ADD'
+                  AND ISNULL(LTRIM(RTRIM(l.mat_grp)), '') = ''
+                ORDER BY d.LineNumber
+                FOR XML PATH(''), TYPE).value('.', 'VARCHAR(MAX)'), 1, 2, '')
+                + ': material group missing on the PreBid (PR) the PO was generated from - it must be filled.'
+            UNION ALL
             SELECT 7, CASE WHEN @max_po_item IS NULL AND EXISTS (
                         SELECT 1 FROM dbo.xx_changeorder_line_stg_tbl_ob
                         WHERE hdr_record_id = @hdr_record_id AND line_action = 'ADD')
@@ -806,7 +844,7 @@ BEGIN
             END
 
             SELECT @ERROR_DESC AS Message;
-            RETURN -5;
+            RETURN -1;
         END
 
         ----------Account Assignment Validation---------
@@ -894,7 +932,7 @@ BEGIN
             END
 
             SELECT @ERROR_DESC AS Message;
-            RETURN -8;
+            RETURN -1;
         END
 
         --------Call Shaker API-----------------------
@@ -986,7 +1024,7 @@ BEGIN
             END
 
             SELECT @ERROR_DESC AS Message, @hdr_record_id AS HdrRecordId;
-            RETURN -6;
+            RETURN -2;
         END
 
     END TRY
@@ -1047,7 +1085,7 @@ BEGIN
             END
 
             SELECT @ERROR_DESC AS Message;
-            RETURN -9;
+            RETURN -2;
         END
 
         -- SAP already accepted the change: finish the success steps that the error interrupted
@@ -1100,7 +1138,7 @@ BEGIN
 
             SELECT 'Change Order sent successfully (completed after error: ' + @ErrorMessage + ')' AS Message,
                    @sap_po_id AS SapPoId, @hdr_record_id AS HdrRecordId;
-            RETURN -9;  -- same code for every unexpected error ; the message tells the cases apart
+            RETURN -2;  -- same code for every unexpected error ; the message tells the cases apart
         END TRY
         BEGIN CATCH
             -- Completion failed : Do NOT re-run this Change Order; the duplicate guard blocks it anyway
@@ -1117,7 +1155,7 @@ BEGIN
             WHERE tran_id = @TRAN_ID AND tran_type = @txn_type;
 
             SELECT @ErrorDesc + ': ' + @ErrorMessage AS Message, @sap_po_id AS SapPoId, @hdr_record_id AS HdrRecordId;
-            RETURN -9;
+            RETURN -2;
         END CATCH
     END CATCH
 

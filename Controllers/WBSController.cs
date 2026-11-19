@@ -1,3 +1,4 @@
+using System.Globalization;
 using Microsoft.AspNetCore.Mvc;
 using SHKRIntegration.Services;
 
@@ -8,9 +9,17 @@ namespace SHKRIntegration.Controllers;
 public sealed class WBSController(ShkrWBSService wbsService) : ControllerBase
 {
     [HttpPost("wbs")]
-    public async Task<IActionResult> Sync([FromQuery] string projectCode, CancellationToken cancellationToken)
+    public async Task<IActionResult> Sync(
+        // [FromQuery] string projectCode,
+        [FromQuery] string? createdon, CancellationToken cancellationToken)
     {
-        var result = await wbsService.FetchSapDataToStagingTableAsync(projectCode, cancellationToken);
+        if (!DateTime.TryParseExact(createdon, "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out var createdOnDate))
+        {
+            return BadRequest("createdon is required (yyyy-MM-dd).");
+        }
+
+        // var result = await wbsService.FetchSapDataToStagingTableAsync(projectCode, cancellationToken);
+        var result = await wbsService.FetchSapDataToStagingTableAsync(createdOnDate, cancellationToken);
         return Ok(result);
     }
 }

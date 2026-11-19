@@ -1,12 +1,14 @@
 USE [PMWeb]
 GO
 
-/****** Object:  StoredProcedure [dbo].[SHK_INT_SAPCOSTCODE_IB_PRC]    Script Date: 11/5/2026 7:55:03 AM ******/
+/****** Object:  StoredProcedure [dbo].[SHK_INT_SAPCOSTCODE_IB_PRC]    Script Date: 11/19/2026 2:10:39 PM ******/
 SET ANSI_NULLS ON
 GO
 
 SET QUOTED_IDENTIFIER ON
 GO
+
+
 
 
 CREATE     PROC [dbo].[SHK_INT_SAPCOSTCODE_IB_PRC]
@@ -153,7 +155,7 @@ AND d.DetailNumber = a.sap_stripped_wbs
 
 ---Update cost code process status of WBS and Activity lines to S, as no cost code is created for them, only WBS
 UPDATE xx_sap_costcode_stg_tbl_ib 
-SET process_status='S'
+SET process_status='X'
 WHERE wbs_type in ('Network','Activity')
 
 print 'Start processing for all root level where there is no parent WBS, this means PMWeb level=project code'
@@ -542,7 +544,12 @@ select 	record_id,project_id,project_code,project_name,pmweb_max_level
 	,(select id from dbo.CostCodeGroupDetails where detailnumber=project_code) L1_detail_id
 	,(select d.id from dbo.CostCodeGroupDetails d, dbo.CostCodeGroups c
 	where d.CostCodeGroupId = c.Id and c.ProjectId=project_id and c.GroupNumber=2
-	and LTRIM(RTRIM(detailnumber))=CASE
+	/*and LTRIM(RTRIM(detailnumber))=CASE
+									WHEN LEFT(RIGHT(parent_wbs, LEN(parent_wbs) - LEN(project_code)), 1) = '-'
+											THEN STUFF(RIGHT(parent_wbs, LEN(parent_wbs) - LEN(project_code)), 1, 1, '')
+									ELSE RIGHT(parent_wbs, LEN(parent_wbs) - LEN(project_code))
+									END*/
+	and detailnumber=CASE
 									WHEN LEFT(RIGHT(parent_wbs, LEN(parent_wbs) - LEN(project_code)), 1) = '-'
 											THEN STUFF(RIGHT(parent_wbs, LEN(parent_wbs) - LEN(project_code)), 1, 1, '')
 									ELSE RIGHT(parent_wbs, LEN(parent_wbs) - LEN(project_code))
@@ -556,7 +563,7 @@ AND parent_wbs <> project_code ---Where parent WBS <> Project code it means L2 W
 AND exists (select 1 from dbo.CostCodeGroupDetails where detailnumber=project_code) --L1_detail_id should exists 
 AND exists (select 1 from dbo.CostCodeGroupDetails d, dbo.CostCodeGroups c
 			where d.CostCodeGroupId = c.Id and c.ProjectId=project_id and c.GroupNumber=2
-			and LTRIM(RTRIM(detailnumber))=CASE
+			and detailnumber=CASE
 											WHEN LEFT(RIGHT(parent_wbs, LEN(parent_wbs) - LEN(project_code)), 1) = '-'
 													THEN STUFF(RIGHT(parent_wbs, LEN(parent_wbs) - LEN(project_code)), 1, 1, '')
 											ELSE RIGHT(parent_wbs, LEN(parent_wbs) - LEN(project_code))
@@ -745,7 +752,7 @@ AND not exists (select 1 from dbo.WBS w
 
 print 'After parent wbs insert'
 
---Update the pmweb id if the WBS already exists
+--Update the pmweb id if the WBS already exists, for parent level
 UPDATE s
 SET s.pmweb_wbs_id     = w.Id,
     s.operation_flag_wbs   = 'U',
@@ -756,6 +763,7 @@ FROM dbo.xx_sap_costcode_stg_tbl_ib s
 JOIN dbo.wbs w ON w.ConfigurationId = s.pmweb_wbs_config_id 
 			   AND w.Code= s.sap_wbs
 WHERE s.process_status_wbs = 'N'
+AND ISNULL(s.parent_wbs, 'X') = 'X'
 
 ----Update status as E for records where parent_wbs is null, since it was already inserted in above steps.
 UPDATE s
@@ -768,7 +776,7 @@ AND ISNULL(s.parent_wbs, 'X') = 'X'
 AND ISNULL(s.pmweb_wbs_id,0) = 0
 
 
---Update the pmweb id if the WBS already exists
+--Update the pmweb id if the WBS already exists, for other levels
 UPDATE s
     SET s.pmweb_wbs_id     = mw.Id,
         s.operation_flag_wbs   = 'U',
@@ -944,5 +952,4 @@ END CATCH
 SET NOCOUNT OFF
 END
 GO
-
 

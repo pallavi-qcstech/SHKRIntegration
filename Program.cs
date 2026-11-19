@@ -25,7 +25,7 @@ builder.Host.UseSerilog((context, loggerConfig) =>
             rollingInterval: RollingInterval.Day,
             retainedFileCountLimit: 30,
             shared: true,
-            outputTemplate: "{Timestamp:yyyy-MM-dd HH:mm:ss.fff zzz} [{Level:u3}] {Message:lj}{NewLine}{Exception}");
+            outputTemplate: "{Timestamp:yyyy-MM-dd HH:mm:ss.fff zzz} [{Level:u3}] {RunTag:l}{Message:lj}{NewLine}{Exception}");
 });
 
 builder.Services.AddGlobalExceptionHandling();
@@ -41,6 +41,9 @@ builder.Services.AddProjectRequisition();
 builder.Services.AddPurchaseOrder();
 builder.Services.AddChangeOrder();
 builder.Services.AddReservations();
+builder.Services.AddMaterials();
+builder.Services.AddProductHierarchy();
+builder.Services.AddPrStatus(builder.Configuration);
 builder.Services.AddNetworkActivities(builder.Configuration);
 
 builder.Services.AddIntegrationHealthChecks();
