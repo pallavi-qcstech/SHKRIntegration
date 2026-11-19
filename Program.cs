@@ -42,7 +42,8 @@ builder.Services.AddPurchaseOrder();
 builder.Services.AddChangeOrder();
 builder.Services.AddReservations();
 builder.Services.AddMaterials();
-// builder.Services.AddPrStatus(builder.Configuration);
+builder.Services.AddProductHierarchy();
+builder.Services.AddPrStatus(builder.Configuration);
 
 builder.Services.AddIntegrationHealthChecks();
 
