@@ -1,4 +1,5 @@
 using System.Data;
+using System.Globalization;
 using System.Net.Http.Json;
 using Microsoft.Data.SqlClient;
 using Microsoft.Extensions.Options;
@@ -20,24 +21,21 @@ public sealed class ShkrProjectService(
     private readonly ShkrDatabaseOptions _databaseOptions = databaseOptions.Value;
 
     public async Task<List<Proj>> GetAllProjectsAsync(
-        string? createdon = null, string? projectCode = null, CancellationToken cancellationToken = default)
+        // string? projectCode,
+        DateTime createdon, CancellationToken cancellationToken = default)
     {
         var client = httpClientFactory.CreateClient(ShkrSapClientName);
         var requestUri = $"/sap/opu/odata/SAP/ZPS_PROJ_SRV/PROJSet?sap-client={_options.ShkrSapClient}";
 
-        var filters = new List<string>();
-        if (!string.IsNullOrWhiteSpace(createdon))
+        var filters = new List<string>
         {
-            filters.Add($"Createdon eq '{createdon}'");
-        }
-        if (!string.IsNullOrWhiteSpace(projectCode))
-        {
-            filters.Add($"Projectcode eq '{projectCode}'");
-        }
-        if (filters.Count > 0)
-        {
-            requestUri += $"&$filter={string.Join(" and ", filters)}";
-        }
+            $"Createdon eq '{createdon.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture)}'"
+        };
+        // if (!string.IsNullOrWhiteSpace(projectCode))
+        // {
+        //     filters.Add($"Projectcode eq '{projectCode}'");
+        // }
+        requestUri += $"&$filter={string.Join(" and ", filters)}";
 
         using var response = await client.GetAsync(requestUri, cancellationToken);
 
@@ -71,11 +69,14 @@ public sealed class ShkrProjectService(
     }
 
     public async Task<SyncResult> FetchSapDataToStagingTableAsync(
-        string? projectCode, string? createdon, CancellationToken cancellationToken = default)
+        // string? projectCode,
+        DateTime createdon, CancellationToken cancellationToken = default)
     {
-        var projects = await GetAllProjectsAsync(createdon, projectCode, cancellationToken);
+        var projects = await GetAllProjectsAsync(createdon, cancellationToken);
 
-        logger.LogInformation("Manual project sync: {Count} project(s) fetched, staging and promoting.", projects.Count);
+        logger.LogInformation(
+            "Manual project sync for Createdon={Createdon:yyyy-MM-dd}: {Count} project(s) fetched, staging and promoting.",
+            createdon, projects.Count);
 
         var staged = 0;
         var errors = new List<string>();
@@ -84,7 +85,7 @@ public sealed class ShkrProjectService(
         {
             try
             {
-                await SaveProject(project, cancellationToken);
+                await SaveProject(project, createdon, cancellationToken);
                 staged++;
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
@@ -99,10 +100,8 @@ public sealed class ShkrProjectService(
         return new SyncResult(projects.Count, staged, errors.Count, errors);
     }
 
-    public async Task SaveProject(Proj project, CancellationToken cancellationToken = default)
+    public async Task SaveProject(Proj project, DateTime filterDate, CancellationToken cancellationToken = default)
     {
-        var now = DateTime.Now;
-
         await using var connection = new SqlConnection(_databaseOptions.ConnectionString);
         await connection.OpenAsync(cancellationToken);
 
@@ -113,7 +112,7 @@ public sealed class ShkrProjectService(
             SET project_name = @ProjectName, project_profile = @ProjectProfile, Start_Date = @StartDate,
                 company_code = @CompanyCode, pr_doc_type = @PrDocType, po_doc_type = @PoDocType,
                 operation_flag = @OperationFlag, process_status = @ProcessStatus,
-                error_msg = NULL, last_update_date = @LastUpdateDate
+                error_msg = NULL, creation_date = @CreationDate, last_update_date = @LastUpdateDate
             WHERE project_code = @ProjectCode
             """;
 
@@ -140,11 +139,8 @@ public sealed class ShkrProjectService(
         command.Parameters.AddWithValue("@PoDocType", string.IsNullOrWhiteSpace(project.PoDocType) ? DBNull.Value : project.PoDocType.Trim());
         command.Parameters.AddWithValue("@OperationFlag", "I");
         command.Parameters.AddWithValue("@ProcessStatus", "N");
-        command.Parameters.AddWithValue("@LastUpdateDate", now);
-        if (!exists)
-        {
-            command.Parameters.AddWithValue("@CreationDate", (object?)project.CreatedOn ?? DBNull.Value);
-        }
+        command.Parameters.Add("@CreationDate", SqlDbType.Date).Value = filterDate.Date;
+        command.Parameters.Add("@LastUpdateDate", SqlDbType.Date).Value = DateTime.Now.Date;
 
         await command.ExecuteNonQueryAsync(cancellationToken);
     }
