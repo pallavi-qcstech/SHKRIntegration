@@ -1,14 +1,16 @@
 USE [PMWeb]
 GO
 
-/****** Object:  StoredProcedure [dbo].[SHK_INT_PROJECT_IB_PRC]    Script Date: 10/16/2026 3:14:12 PM ******/
+/****** Object:  StoredProcedure [dbo].[SHK_INT_PROJECT_IB_PRC]    Script Date: 11/19/2026 2:06:32 PM ******/
 SET ANSI_NULLS ON
 GO
 
 SET QUOTED_IDENTIFIER ON
 GO
 
-ALTER PROC [dbo].[SHK_INT_PROJECT_IB_PRC]
+
+
+CREATE   PROC [dbo].[SHK_INT_PROJECT_IB_PRC]
 AS
 
 SET XACT_ABORT ON
@@ -90,6 +92,7 @@ FROM dbo.xx_project_stg_tbl_ib a
 WHERE a.process_status IN ('N')
 AND NOT EXISTS (Select 1 from dbo.programs where Name =  a.project_profile and IsActive=1)
 
+print 'A' 
 
 --Update data for all the existing projects
 BEGIN
@@ -122,6 +125,8 @@ BEGIN
     FROM dbo.Projects b
     INNER JOIN #MatchedProjects m
         ON m.project_code = b.ProjectNumber;
+
+		print 'B' 
  
     -- Update 2: xx_project_stg_tbl_ib, driven by the same pre-matched set
     UPDATE a
@@ -132,6 +137,8 @@ BEGIN
     FROM dbo.xx_project_stg_tbl_ib a
     INNER JOIN #MatchedProjects m
         ON m.project_code = a.project_code;
+
+		print 'C' 
  
     DROP TABLE #MatchedProjects;
 END
@@ -151,8 +158,10 @@ select 	record_id,project_code
 	,Start_Date
 	,End_Date
 	,(select id from dbo.Programs where Name = a.project_profile and IsActive=1) programid
-from xx_project_stg_tbl_ib a
-where process_status in ('N','E') and isnull(operation_flag,'I')='I'
+from xx_project_stg_tbl_ib a, dbo.Programs b
+where 1=1
+and trim(a.project_profile) = b.Name
+and process_status in ('N','E') and isnull(operation_flag,'I')='I'
 and not exists (select 1 from dbo.Projects p where p.ProjectNumber = a.project_code and p.IsActive=1)
 
 OPEN prj_cursor
@@ -170,6 +179,8 @@ WHILE @@FETCH_STATUS = 0
 BEGIN
 	SET @ERROR_STATUS=0
 	SET @ERROR_DESC=''
+
+	print 'In project create loop for ' print  @project_code
 
 	EXEC [dbo].[API_AddProject]
 	@ProgramId = @program_id
@@ -219,6 +230,7 @@ BEGIN
 
 
 SET @pmweb_project_id = isnull((select id from dbo.projects where ProjectNumber = @project_code and IsActive=1),0)
+print '@pmweb_project_id' print @pmweb_project_id
 
 IF @pmweb_project_id = 0 OR @pmweb_project_id='' 
 	UPDATE a
@@ -345,5 +357,4 @@ END CATCH
 SET NOCOUNT OFF
 END
 GO
-
 
