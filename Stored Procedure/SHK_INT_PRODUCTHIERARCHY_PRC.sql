@@ -1,7 +1,7 @@
 USE [PMWeb]
 GO
 
-/****** Object:  StoredProcedure [dbo].[SHK_INT_PRODUCTHIERARCHY_PRC]    Script Date: 10/16/2026 3:12:19 PM ******/
+/****** Object:  StoredProcedure [dbo].[SHK_INT_PRODUCTHIERARCHY_PRC]    Script Date: 11/19/2026 12:47:57 PM ******/
 SET ANSI_NULLS ON
 GO
 
@@ -316,5 +316,4 @@ BEGIN
 
 END;
 GO
-
 

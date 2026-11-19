@@ -76,6 +76,12 @@ BEGIN
 						and status IN ('N','I')
 						and cast(x.create_date as date) = cast(GETDATE() as date)
 						)
+		---16/11/26 - a document with a 'P' row (pending SAP approval, any date) is not queued again.
+		and not exists (select 1
+						from  xx_integration_tbl w
+						where w.wf_document_id = wd.Id
+						and w.status = 'P'
+						)
 	)
 
 	SET NOCOUNT OFF;
