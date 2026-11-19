@@ -44,6 +44,7 @@ builder.Services.AddReservations();
 builder.Services.AddMaterials();
 builder.Services.AddProductHierarchy();
 builder.Services.AddPrStatus(builder.Configuration);
+builder.Services.AddNetworkActivities(builder.Configuration);
 
 builder.Services.AddIntegrationHealthChecks();
 
