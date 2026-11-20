@@ -79,7 +79,12 @@ public sealed class ShkrDeliveryService(
         var staged = 0;
         var errors = new List<string>();
 
-        foreach (var delivery in deliveries)
+        var orderedDeliveries = deliveries
+            .OrderBy(d => d.DeliveryNumber.Length)
+            .ThenBy(d => d.DeliveryNumber, StringComparer.Ordinal)
+            .ToList();
+
+        foreach (var delivery in orderedDeliveries)
         {
             try
             {
@@ -123,30 +128,6 @@ public sealed class ShkrDeliveryService(
         SqlConnection connection, SqlTransaction transaction, DeliveryHeader d, DateTime now,
         CancellationToken cancellationToken)
     {
-        const string existsSql =
-            "SELECT COUNT(1) FROM dbo.xx_delivery_hdr_stg_tbl_ib WHERE DeliveryNumber = @DeliveryNumber";
-
-        const string updateSql = """
-            UPDATE dbo.xx_delivery_hdr_stg_tbl_ib
-            SET CreationDateTime = @CreationDateTime, LastUpdateDateTime = @LastUpdateDateTime,
-                CreatedByName = @CreatedByName, DocumentDate = @DocumentDate, DocumentStatus = @DocumentStatus,
-                ShipToPartyNumber = @ShipToPartyNumber, ShippingPoint = @ShippingPoint,
-                ShippingPointName = @ShippingPointName, Date_to = @DateTo, Date_from = @DateFrom,
-                DeliveryType = @DeliveryType, DeliveryTypeDesc = @DeliveryTypeDesc,
-                IsSaleDelivery = @IsSaleDelivery, IsReturnDelivery = @IsReturnDelivery,
-                IsFullyInvoiced = @IsFullyInvoiced, BillingStatus = @BillingStatus,
-                ItemChangeDate = @ItemChangeDate, GoodsMovementStatus = @GoodsMovementStatus,
-                GoodsMovementStatusDesc = @GoodsMovementStatusDesc,
-                OverallPickingStatus = @OverallPickingStatus, OverallPickingStatusDesc = @OverallPickingStatusDesc,
-                WarehouseActivityStatus = @WarehouseActivityStatus,
-                WarehouseActivityStatusDesc = @WarehouseActivityStatusDesc,
-                BillingStatusDesc = @BillingStatusDesc,
-                operation_flag = @OperationFlag, process_status = @ProcessStatus, error_msg = NULL,
-                last_update_date = @StagingLastUpdateDate
-            OUTPUT INSERTED.record_id
-            WHERE DeliveryNumber = @DeliveryNumber
-            """;
-
         const string insertSql = """
             INSERT INTO dbo.xx_delivery_hdr_stg_tbl_ib
                 (DeliveryNumber, CreationDateTime, LastUpdateDateTime, CreatedByName, DocumentDate,
@@ -167,10 +148,7 @@ public sealed class ShkrDeliveryService(
                  @OperationFlag, @ProcessStatus, @StagingCreationDate, @StagingLastUpdateDate)
             """;
 
-        var exists = await RowExists(connection, transaction, existsSql, cancellationToken,
-            ("@DeliveryNumber", d.DeliveryNumber));
-
-        await using var command = new SqlCommand(exists ? updateSql : insertSql, connection, transaction);
+        await using var command = new SqlCommand(insertSql, connection, transaction);
         command.Parameters.AddWithValue("@DeliveryNumber", d.DeliveryNumber);
         command.Parameters.AddWithValue("@CreationDateTime", (object?)d.CreationDateTime ?? DBNull.Value);
         command.Parameters.AddWithValue("@LastUpdateDateTime", (object?)d.LastUpdateDateTime ?? DBNull.Value);
@@ -199,10 +177,7 @@ public sealed class ShkrDeliveryService(
         command.Parameters.AddWithValue("@OperationFlag", "I");
         command.Parameters.AddWithValue("@ProcessStatus", "N");
         command.Parameters.AddWithValue("@StagingLastUpdateDate", now.Date);
-        if (!exists)
-        {
-            command.Parameters.AddWithValue("@StagingCreationDate", now.Date);
-        }
+        command.Parameters.AddWithValue("@StagingCreationDate", now.Date);
 
         return (long)(await command.ExecuteScalarAsync(cancellationToken))!;
     }
@@ -211,28 +186,6 @@ public sealed class ShkrDeliveryService(
         SqlConnection connection, SqlTransaction transaction, string deliveryNumber, long hdrRecordId,
         IReadOnlyList<DeliveryLine> lines, DateTime now, CancellationToken cancellationToken)
     {
-        const string existsSql = """
-            SELECT COUNT(1) FROM dbo.xx_delivery_line_stg_tbl_ib
-            WHERE DeliveryNumber = @DeliveryNumber AND LineNumber = @LineNumber
-            """;
-
-        const string updateSql = """
-            UPDATE dbo.xx_delivery_line_stg_tbl_ib
-            SET hdr_record_id = @HdrRecordId, SalesOrderNumber = @SalesOrderNumber, Material = @Material, ItemDescription = @ItemDescription,
-                DeliveredQuantity = @DeliveredQuantity, PickedQuantity = @PickedQuantity, Uom = @Uom,
-                Plant = @Plant, WarehouseNo = @WarehouseNo, Quantity = @Quantity, Status = @Status,
-                WbsElement = @WbsElement, SalesOrderItem = @SalesOrderItem,
-                OriginalDeliveryNumber = @OriginalDeliveryNumber, OriginalDeliveryItem = @OriginalDeliveryItem,
-                ItemChangeDate = @ItemChangeDate, PickingStatus = @PickingStatus,
-                PickingStatusDesc = @PickingStatusDesc, WarehouseActivityStatus = @WarehouseActivityStatus,
-                WarehouseActivityStatusDesc = @WarehouseActivityStatusDesc,
-                GoodsMovementStatus = @GoodsMovementStatus, GoodsMovementStatusDesc = @GoodsMovementStatusDesc,
-                BillingStatus = @BillingStatus, BillingStatusDesc = @BillingStatusDesc,
-                operation_flag = @OperationFlag, process_status = @ProcessStatus, error_msg = NULL,
-                last_update_date = @StagingLastUpdateDate
-            WHERE DeliveryNumber = @DeliveryNumber AND LineNumber = @LineNumber
-            """;
-
         const string insertSql = """
             INSERT INTO dbo.xx_delivery_line_stg_tbl_ib
                 (hdr_record_id, DeliveryNumber, LineNumber, SalesOrderNumber, Material, ItemDescription, DeliveredQuantity,
@@ -250,12 +203,13 @@ public sealed class ShkrDeliveryService(
                  @OperationFlag, @ProcessStatus, @StagingCreationDate, @StagingLastUpdateDate)
             """;
 
-        foreach (var line in lines)
-        {
-            var exists = await RowExists(connection, transaction, existsSql, cancellationToken,
-                ("@DeliveryNumber", deliveryNumber), ("@LineNumber", line.LineNumber));
+        var orderedLines = lines
+            .OrderBy(l => l.LineNumber.Length)
+            .ThenBy(l => l.LineNumber, StringComparer.Ordinal);
 
-            await using var command = new SqlCommand(exists ? updateSql : insertSql, connection, transaction);
+        foreach (var line in orderedLines)
+        {
+            await using var command = new SqlCommand(insertSql, connection, transaction);
             command.Parameters.AddWithValue("@HdrRecordId", hdrRecordId);
             command.Parameters.AddWithValue("@DeliveryNumber", deliveryNumber);
             command.Parameters.AddWithValue("@LineNumber", line.LineNumber);
@@ -285,26 +239,9 @@ public sealed class ShkrDeliveryService(
             command.Parameters.AddWithValue("@OperationFlag", "I");
             command.Parameters.AddWithValue("@ProcessStatus", "N");
             command.Parameters.AddWithValue("@StagingLastUpdateDate", now.Date);
-            if (!exists)
-            {
-                command.Parameters.AddWithValue("@StagingCreationDate", now.Date);
-            }
+            command.Parameters.AddWithValue("@StagingCreationDate", now.Date);
 
             await command.ExecuteNonQueryAsync(cancellationToken);
         }
-    }
-
-    private static async Task<bool> RowExists(
-        SqlConnection connection, SqlTransaction transaction, string existsSql, CancellationToken cancellationToken,
-        params (string Name, object Value)[] keyParameters)
-    {
-        await using var command = new SqlCommand(existsSql, connection, transaction);
-        foreach (var (name, value) in keyParameters)
-        {
-            command.Parameters.AddWithValue(name, value);
-        }
-
-        var count = (int)(await command.ExecuteScalarAsync(cancellationToken))!;
-        return count > 0;
     }
 }
