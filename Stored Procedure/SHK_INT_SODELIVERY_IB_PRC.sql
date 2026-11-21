@@ -1,12 +1,13 @@
 USE [PMWeb]
 GO
 
-/****** Object:  StoredProcedure [dbo].[SHK_INT_SODELIVERY_IB_PRC]    Script Date: 11/19/2026 2:11:09 PM ******/
+/****** Object:  StoredProcedure [dbo].[SHK_INT_SODELIVERY_IB_PRC]    Script Date: 11/21/2026 6:30:50 AM ******/
 SET ANSI_NULLS ON
 GO
 
 SET QUOTED_IDENTIFIER ON
 GO
+
 
 
 CREATE     PROC [dbo].[SHK_INT_SODELIVERY_IB_PRC] 
@@ -169,6 +170,7 @@ SELECT record_id
 	,DocumentDate
 FROM xx_delivery_hdr_stg_tbl_ib
 WHERE process_status = 'N'
+ORDER BY record_id
 
 OPEN hdr_cursor
 
@@ -234,6 +236,14 @@ print '@lastproductonid = ' + cast(@lastproductonid as varchar)
 		UPDATE xx_delivery_hdr_stg_tbl_ib set process_status='E',error_msg = 'Error in creating delivery header', last_update_date=getdate()
 		WHERE record_id = @record_id
 	ELSE
+		----Add all change orders which are not added to the invoice
+		/*
+		exec [dbo].[CostManagement_AddChangeOrdersToProductionContract] 
+					@ProductionId=@pmweb_hdr_id,
+					@ContractCODetailIds=N'35,36,37',
+					@ChangeEventDetailIds=N'',
+					@UserId=5,@Revised=0,@Merge=0
+		*/
 		BEGIN
 			---update for contract lines
 			update CostManagement_ProductionDetails 
@@ -382,4 +392,5 @@ END CATCH
 SET NOCOUNT OFF
 END
 GO
+
 

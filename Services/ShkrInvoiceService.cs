@@ -126,9 +126,11 @@ public sealed class ShkrInvoiceService(
         (string Column, object? Value)[] values =
         [
             ("InvoiceNumber", h.InvoiceNumber),
+            ("InvoiceDescription", h.InvoiceDescription),
             ("BillingType", h.BillingType),
             ("BillingTypeDesc", h.BillingTypeDesc),
             ("DocumentCategory", h.DocumentCategory),
+            ("IsCreditMemo", h.IsCreditMemo),
             ("IsSaleInvoice", h.IsSaleInvoice),
             ("IsReturnInvoice", h.IsReturnInvoice),
             ("IsCancellation", h.IsCancellation),

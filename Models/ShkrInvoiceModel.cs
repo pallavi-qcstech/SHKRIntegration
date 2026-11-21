@@ -5,9 +5,11 @@ namespace SHKRIntegration.Models;
 public sealed class InvoiceHeader
 {
     [JsonPropertyName("InvoiceNumber")] public string InvoiceNumber { get; set; } = string.Empty;
+    [JsonPropertyName("InvoiceDescription")] public string InvoiceDescription { get; set; } = string.Empty;
     [JsonPropertyName("BillingType")] public string BillingType { get; set; } = string.Empty;
     [JsonPropertyName("BillingTypeDesc")] public string BillingTypeDesc { get; set; } = string.Empty;
     [JsonPropertyName("DocumentCategory")] public string DocumentCategory { get; set; } = string.Empty;
+    [JsonPropertyName("IsCreditMemo")] public bool? IsCreditMemo { get; set; }
     [JsonPropertyName("IsSaleInvoice")] public bool? IsSaleInvoice { get; set; }
     [JsonPropertyName("IsReturnInvoice")] public bool? IsReturnInvoice { get; set; }
     [JsonPropertyName("IsCancellation")] public bool? IsCancellation { get; set; }
