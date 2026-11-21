@@ -26,7 +26,13 @@ public sealed class PoStatusEntry
     public string? Status { get; set; }
 }
 
-public sealed record SapStatusRead(int HttpStatus, string? DocumentType, string? Status, string? SapMessage, string RawResponse);
+public sealed record SapStatusRead(
+    int HttpStatus,
+    string? DocumentType,
+    string? Status,
+    string? SapMessage,
+    string RawResponse,
+    string? ReadError = null);
 
 public sealed record StatusReadResult(
     long RecordId,

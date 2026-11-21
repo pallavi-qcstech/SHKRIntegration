@@ -54,11 +54,75 @@ public sealed class ShkrPrStatusService(
     private readonly ShkrDatabaseOptions _databaseOptions = databaseOptions.Value;
     private volatile bool _stoppedBy401;
 
+    public const string PrFilterField = "purchase_requsition";
+
     public Task<StatusReadResult> ReadPrAsync(long recordId, CancellationToken cancellationToken = default) =>
-        ReadAsync("PR", "PREBID", "PRSet", PrNumberSql, ParsePrResponse, recordId, cancellationToken);
+        ReadAsync("PR", "PREBID", "PRSet", PrFilterField, PrNumberSql, ParsePrFilterResponse, recordId, cancellationToken);
 
     public Task<StatusReadResult> ReadPoAsync(long recordId, CancellationToken cancellationToken = default) =>
-        ReadAsync("PO", "Commitments", "POSet", PoNumberSql, ParsePoResponse, recordId, cancellationToken);
+        ReadAsync("PO", "Commitments", "POSet", null, PoNumberSql, (httpStatus, body, _) => ParsePoResponse(httpStatus, body),
+            recordId, cancellationToken);
+
+    public static string BuildRequestUri(string servicePath, string entitySet, string? filterField, string sapNumber, string sapClient)
+    {
+        var basePath = $"{servicePath.TrimEnd('/')}/{entitySet}";
+        if (filterField is null)
+        {
+            return $"{basePath}('{sapNumber}')?sap-client={sapClient}&$format=json";
+        }
+
+        var filter = Uri.EscapeDataString($"{filterField} eq '{sapNumber}'");
+        return $"{basePath}?sap-client={sapClient}&$filter={filter}&$format=json";
+    }
+
+    public static SapStatusRead ParsePrFilterResponse(int httpStatus, string body, string sapNumber)
+    {
+        if (httpStatus is < 200 or >= 300)
+        {
+            return new SapStatusRead(httpStatus, null, null, ReadSapErrorValue(body), body);
+        }
+
+        List<PrStatusEntry>? entries = null;
+        try
+        {
+            using var document = JsonDocument.Parse(body);
+            if (document.RootElement.ValueKind == JsonValueKind.Object &&
+                document.RootElement.TryGetProperty("d", out var d) &&
+                d.ValueKind == JsonValueKind.Object &&
+                d.TryGetProperty("results", out var results) &&
+                results.ValueKind == JsonValueKind.Array)
+            {
+                entries = results.Deserialize<List<PrStatusEntry>>();
+            }
+        }
+        catch (JsonException)
+        {
+            entries = null;
+        }
+
+        if (entries is null)
+        {
+            return new SapStatusRead(httpStatus, null, null, null, body,
+                $"SAP reply for PR {sapNumber} is not an OData result list; nothing was written.");
+        }
+
+        var matches = entries
+            .Where(e => NormalizeDocumentNumber(e.PurchaseRequisition) == sapNumber)
+            .ToList();
+
+        if (matches.Count > 1)
+        {
+            return new SapStatusRead(httpStatus, null, null, null, body,
+                $"SAP returned {matches.Count} entries for PR {sapNumber}; nothing was written.");
+        }
+
+        if (matches.Count == 0)
+        {
+            return new SapStatusRead(httpStatus, null, null, null, body);
+        }
+
+        return new SapStatusRead(httpStatus, matches[0].PrType, matches[0].Status, null, body);
+    }
 
     public static string? NormalizeDocumentNumber(string? value)
     {
@@ -167,8 +231,9 @@ public sealed class ShkrPrStatusService(
         string documentKind,
         string expectedTranType,
         string entitySet,
+        string? filterField,
         string numberSql,
-        Func<int, string, SapStatusRead> parse,
+        Func<int, string, string, SapStatusRead> parse,
         long recordId,
         CancellationToken cancellationToken)
     {
@@ -228,8 +293,8 @@ public sealed class ShkrPrStatusService(
                 $"{documentKind} number '{rawNumber}' of tran_id {tranId} is not a 1-10 digit SAP number; SAP was not called.");
         }
 
-        var requestUri =
-            $"{prStatusOptions.CurrentValue.ServicePath.TrimEnd('/')}/{entitySet}('{sapNumber}')?sap-client={_shkrSapOptions.ShkrSapClient}&$format=json";
+        var requestUri = BuildRequestUri(prStatusOptions.CurrentValue.ServicePath, entitySet, filterField, sapNumber,
+            _shkrSapOptions.ShkrSapClient);
 
         SapStatusRead read;
         try
@@ -247,12 +312,19 @@ public sealed class ShkrPrStatusService(
             }
 
             var body = await response.Content.ReadAsStringAsync(cancellationToken);
-            read = parse((int)response.StatusCode, body);
+            read = parse((int)response.StatusCode, body, sapNumber);
         }
         catch (Exception ex) when (ex is HttpRequestException || (ex is TaskCanceledException && !cancellationToken.IsCancellationRequested))
         {
             logger.LogError(ex, "{DocumentKind} status read failed for {SapNumber} (record_id {RecordId}).", documentKind, sapNumber, recordId);
             return Fail(recordId, StatusCodes.Status504GatewayTimeout, $"No answer from SAP: {ex.Message}", sapNumber);
+        }
+
+        if (read.ReadError is not null)
+        {
+            logger.LogWarning("{DocumentKind} {SapNumber} (record_id {RecordId}): {ReadError}",
+                documentKind, sapNumber, recordId, read.ReadError);
+            return Fail(recordId, StatusCodes.Status502BadGateway, read.ReadError, sapNumber);
         }
 
         var approvalStatus = read.HttpStatus is >= 200 and < 300 ? MapApprovalStatus(read.Status) : null;

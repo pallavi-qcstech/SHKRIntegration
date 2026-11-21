@@ -1,12 +1,13 @@
 USE [PMWeb]
 GO
 
-/****** Object:  StoredProcedure [dbo].[SHK_INT_SALEORDER_IB_PRC]    Script Date: 11/19/2026 2:08:36 PM ******/
+/****** Object:  StoredProcedure [dbo].[SHK_INT_SALEORDER_IB_PRC]    Script Date: 11/21/2026 6:08:46 AM ******/
 SET ANSI_NULLS ON
 GO
 
 SET QUOTED_IDENTIFIER ON
 GO
+
 
 
 CREATE   PROC [dbo].[SHK_INT_SALEORDER_IB_PRC]
@@ -47,6 +48,7 @@ DECLARE
 ,@deliveryexists             bigint
 ,@onlyitemchange             bigint
 ,@newlineaddedinso           bigint
+,@existinglinechange         bigint
 
 DECLARE @Result TABLE (ID BIGINT);
 
@@ -170,7 +172,7 @@ AND NOT EXISTS (select count(distinct l.OriginalSalesOrder)
 			where l.hdr_record_id = h.record_id
 			and (l.OriginalSalesOrder is not null and l.OriginalSalesOrder <> '')
 			and (l.OriginalSalesOrderItem is not null and l.OriginalSalesOrderItem <> '')
-			having count(distinct l.OriginalSalesOrder) = 1
+			having count(distinct l.OriginalSalesOrder) > 1
 			)
 
 ---Update the original pmweb contract id for the return orders
@@ -228,6 +230,7 @@ SELECT record_id
 	,pmweb_original_contract_id
 FROM xx_salesorder_hdr_stg_tbl_ib
 WHERE process_status = 'N'
+ORDER BY record_id
 
 OPEN hdr_cursor
 
@@ -392,7 +395,7 @@ IF @operation_flag = 'U' AND @IsReturnOrder = 0
 		PRINT CONCAT('in update of record id = ', @record_id)
 		BEGIN TRAN;
 
-		SET @deliveryexists = (select count(*) from dbo.CostManagement_Productions where PrimeContractId = @pmweb_hdr_id)
+		SET @deliveryexists = (select count(*) from dbo.CostManagement_Productions where PrimeContractId = @pmweb_hdr_id and DocStatusId=5 and IsActive=1)
 
 		---Check if there is only item change and no qty/price change
 		SET @onlyitemchange = (SELECT count(d.id)
@@ -404,6 +407,15 @@ IF @operation_flag = 'U' AND @IsReturnOrder = 0
 								AND l.PmwebItemId <> d.ItemId
 								)
 
+		---Check if there is qty/price change
+		SET @existinglinechange = (SELECT count(d.id)
+								FROM xx_salesorder_line_stg_tbl_ib l
+								JOIN dbo.CostManagement_ContractDetails d ON d.field3 = l.LineNumber
+								WHERE d.ContractId = @pmweb_hdr_id
+								AND l.hdr_record_id = @record_id
+								AND (l.Quantity <> d.Quantity OR l.NetValueWithTax <> d.TotalPrice)
+								)
+		
 		---Check if there are any new lines added to SO
 		SET @newlineaddedinso = (SELECT count(l.record_id)
 								FROM xx_salesorder_line_stg_tbl_ib l
@@ -417,9 +429,9 @@ IF @operation_flag = 'U' AND @IsReturnOrder = 0
 
 		PRINT CONCAT('@deliveryexists = ', @deliveryexists, ', @onlyitemchange = ', @onlyitemchange, ', @newlineaddedinso = ', @newlineaddedinso)
 
----#########################################################################################################
--- CONTRACT ORDER UPDATE FLOW
----#########################################################################################################
+	---#########################################################################################################
+	-- CONTRACT ORDER ITEM ONLY UPDATE FLOW
+	---#########################################################################################################
 
 		---No delivery exists OR if delivery exists and Only item change and no new line, update the sales order
 		IF @deliveryexists = 0 OR (@deliveryexists = 1 AND @onlyitemchange > 0 AND @newlineaddedinso = 0)
@@ -481,11 +493,188 @@ IF @operation_flag = 'U' AND @IsReturnOrder = 0
 		END --End of sale order update
 
 ---#########################################################################################################
+-- IF DELIEVRY EXISTS AND QTY/PRICE IS CHANGED IN EXISTING LINE, UPDATE THE QTY/PRICE IN ALL DELIVERIES AS WELL
+---#########################################################################################################
+		IF @deliveryexists > 0 AND @existinglinechange > 0
+		BEGIN TRY
+			PRINT CONCAT('delivery exists, updating existing contract and delivery for change in qty/price for contract id = ', @pmweb_hdr_id)
+
+			MERGE INTO dbo.CostManagement_ContractDetails tgt
+			USING (SELECT @pmweb_hdr_id contract_id
+						,l.linenumber
+						,l.pmwebitemid
+						,l.ItemDescription
+						,l.Quantity
+						,x.currencyid
+						,x.uomid
+						,cast(l.NetValueWithTax/l.Quantity as decimal(32,5)) unitcost
+						,l.NetValueWithTax TotalCost
+						,l.pmwebcostcodeid
+						,l.QuotationNumber
+						,l.QuotationItem
+					FROM xx_salesorder_line_stg_tbl_ib l
+					JOIN xx_salesorder_hdr_stg_tbl_ib h ON h.record_id = l.hdr_record_id
+					JOIN dbo.CostManagement_ContractDetails x ON h.pmweb_hdr_id = x.ContractId AND x.field3 = l.LineNumber
+					WHERE l.hdr_record_id = @record_id
+					AND h.pmweb_hdr_id IS NOT NULL
+					AND (l.Quantity <> x.Quantity OR l.NetValueWithTax <> x.TotalPrice)
+				) src
+			ON (tgt.ContractId = src.contract_id AND tgt.Field3 = src.LineNumber)
+			WHEN MATCHED THEN
+				UPDATE SET tgt.ItemId = src.pmwebitemid
+					,tgt.Description = src.ItemDescription
+					,tgt.Quantity = src.Quantity
+					,tgt.UnitCost = src.UnitCost
+					,tgt.TotalCost = src.TotalCost
+					,tgt.TotalPrice = src.TotalCost
+					,tgt.CostCodeId = src.pmwebcostcodeid
+					,tgt.Field1 = src.QuotationNumber
+					,tgt.Field2 = src.QuotationItem
+					,tgt.modifier = 5
+					,tgt.modifiedOn = getdate();
+		
+			PRINT CONCAT('after merge of updating existing contract line, rows = ', @@ROWCOUNT)
+
+			UPDATE xx_salesorder_hdr_stg_tbl_ib
+			SET process_status = 'S', pmweb_hdr_id = @pmweb_hdr_id, last_update_date=GETDATE(), error_msg=null, operation_flag='U'
+			WHERE record_id = @record_id
+
+			UPDATE l
+			SET l.pmweb_line_id = d.id, l.process_status = 'S', l.last_update_date = GETDATE(), l.error_msg = NULL, l.operation_flag = 'U'
+			FROM xx_salesorder_line_stg_tbl_ib l
+			JOIN dbo.CostManagement_ContractDetails d ON d.field3 = l.linenumber
+			WHERE d.ContractId = @pmweb_hdr_id
+			AND l.hdr_record_id = @record_id
+
+			---UPDATE ALL EXISTING DELIVERIES FROM LATEST CONTRACT LINES
+			UPDATE dbo.CostManagement_ProductionDetails
+			SET ScheduledQuantity = cd.Quantity, Rate = cd.UnitCost
+			FROM dbo.CostManagement_ProductionDetails pd, dbo.CostManagement_ContractDetails cd
+			WHERE cd.ContractId = @pmweb_hdr_id
+			AND cd.Id = pd.ContractDetailId
+			AND cd.Quantity > 0 AND cd.unitcost > 0
+			AND (pd.ScheduledQuantity <> cd.Quantity OR pd.Rate <> cd.UnitCost)
+		
+		END TRY
+		BEGIN CATCH
+			IF @@TRANCOUNT > 0
+			ROLLBACK TRAN;
+
+			PRINT 'Error in change order creation' + ERROR_MESSAGE()
+			UPDATE xx_salesorder_line_stg_tbl_ib
+			SET process_status = 'E', error_msg = 'Error in updating contract. '+ERROR_MESSAGE(), operation_flag='I'
+			WHERE hdr_record_id = @record_id
+
+			UPDATE xx_salesorder_hdr_stg_tbl_ib
+			SET process_status = 'E', error_msg = 'Error in updating contract. '+ERROR_MESSAGE(), operation_flag='I'
+			WHERE record_id = @record_id
+		END CATCH
+		
+---#########################################################################################################
+-- IF DELIEVRY EXISTS AND NEW LINE IS ADDED IN SO, ADD THE NEW LINE IN ALL DELIVERIES AS WELL
+---#########################################################################################################
+	IF @deliveryexists > 0 AND @newlineaddedinso > 0
+	BEGIN TRY
+			PRINT CONCAT('delivery exists, adding new line in existing contract and delivery for contract id = ', @pmweb_hdr_id)
+
+			MERGE INTO dbo.CostManagement_ContractDetails tgt
+			USING (SELECT @pmweb_hdr_id contract_id
+						,l.linenumber
+						,l.pmwebitemid
+						,l.ItemDescription
+						,l.Quantity
+						,@CurrencyId currencyid
+						,u.Id uomid
+						,cast(l.NetValueWithTax/l.Quantity as decimal(32,5)) unitcost
+						,l.NetValueWithTax TotalCost
+						,l.pmwebcostcodeid
+						,l.QuotationNumber
+						,l.QuotationItem
+					FROM xx_salesorder_line_stg_tbl_ib l
+					JOIN xx_salesorder_hdr_stg_tbl_ib h ON h.record_id = l.hdr_record_id
+					JOIN dbo.UOM u ON u.UOM = l.Uom
+					WHERE l.hdr_record_id = @record_id
+					AND h.pmweb_hdr_id IS NOT NULL
+				) src
+			ON (tgt.ContractId = src.contract_id AND tgt.Field3 = src.LineNumber)
+			WHEN NOT MATCHED THEN
+				INSERT
+					(ContractId,Linenumber,ItemId,Description,Quantity,CurrencyId,
+					UOMId,UnitCost,TotalCost,TotalPrice,CostCodeId,Field1,Field2,Field3)
+				VALUES
+					(src.contract_id,src.linenumber,src.pmwebitemid,src.ItemDescription,src.Quantity,src.currencyid,
+					src.uomId,src.UnitCost,src.TotalCost,src.TotalCost,src.pmwebcostcodeid,src.QuotationNumber,src.QuotationItem,src.LineNumber);
+
+			PRINT CONCAT('after merge of inserting new line in contract, rows = ', @@ROWCOUNT)
+
+			UPDATE xx_salesorder_hdr_stg_tbl_ib
+			SET process_status = 'S', pmweb_hdr_id = @pmweb_hdr_id, last_update_date=GETDATE(), error_msg=null, operation_flag='U'
+			WHERE record_id = @record_id
+
+			UPDATE l
+			SET l.pmweb_line_id = d.id, l.process_status = 'S', l.last_update_date = GETDATE(), l.error_msg = NULL, l.operation_flag = 'U'
+			FROM xx_salesorder_line_stg_tbl_ib l
+			JOIN dbo.CostManagement_ContractDetails d ON d.field3 = l.linenumber
+			WHERE d.ContractId = @pmweb_hdr_id
+			AND l.hdr_record_id = @record_id
+
+			----Insert the new lines in deliveries
+			MERGE INTO dbo.CostManagement_ProductionDetails tgt
+				USING (SELECT x.contractId 
+						,x.Description
+						,x.Quantity
+						,x.CurrencyId
+						,x.uomid
+						,x.unitcost
+						,x.costcodeid
+						,x.Id ContractDetailId
+						,p.id productionid
+					FROM dbo.CostManagement_ContractDetails x 
+					JOIN dbo.CostManagement_Productions p ON p.PrimeContractId = x.ContractId AND p.IsActive=1 
+					WHERE x.contractId = @pmweb_hdr_id
+					AND x.Quantity > 0 AND x.unitcost > 0
+				) src
+			ON (tgt.productionid = src.productionid AND tgt.ContractDetailId = src.ContractDetailId)
+			WHEN NOT MATCHED THEN
+			INSERT 
+					(ProductionId,LineNumber,Date,CostCodeId,Description,UOMId,Quantity
+					 ,Rate,Total,PrimeContractId,CommitmentId,CompanyId,IsDone
+     				,CumulativeQuantity,CommitmentDetailId,ContractDetailId,ScheduledQuantity
+					,CurrencyId,LastUpdatedBy,LastUpdateDate,Notes,CreatedBy,CreateDate
+					)
+			VALUES	
+				(src.productionid
+				,(ISNULL((SELECT MAX(LineNumber) 
+					FROM CostManagement_ProductionDetails 
+					WHERE ProductionId = src.productionid),0)) + 1
+				,GETDATE(),src.costcodeid,ISNULL(src.Description,''),ISNULL(src.uomid,''),0
+					,ISNULL(src.UnitCost,0),0,src.contractid,NULL,NULL,0
+					,0,NULL,src.ContractDetailId,src.Quantity
+					,src.CurrencyId,5,GETDATE(),'',5,GETDATE()
+				);
+		
+		END TRY
+		BEGIN CATCH
+			IF @@TRANCOUNT > 0
+			ROLLBACK TRAN;
+
+			PRINT 'Error in change order creation' + ERROR_MESSAGE()
+			UPDATE xx_salesorder_line_stg_tbl_ib
+			SET process_status = 'E', error_msg = 'Error in updating contract. '+ERROR_MESSAGE(), operation_flag='I'
+			WHERE hdr_record_id = @record_id
+
+			UPDATE xx_salesorder_hdr_stg_tbl_ib
+			SET process_status = 'E', error_msg = 'Error in updating contract. '+ERROR_MESSAGE(), operation_flag='I'
+			WHERE record_id = @record_id
+		END CATCH
+
+	/* --- commenting change order for contract changes for testing direct updates to contract and deliveries
+---#########################################################################################################
 -- CHANGE ORDER CREATION FLOW WHEN DELIVERY EXISTS FOR NORMAL ORDERS, WHEN NEW LINE IS ADDED OR QTY IS CHANGED
 ---#########################################################################################################
 		IF @deliveryexists > 0 AND (@onlyitemchange <> 0 OR @newlineaddedinso > 0)
 		BEGIN TRY
-			PRINT CONCAT('delivery exists, creating CO for contract id = ', @pmweb_hdr_id)
+			PRINT CONCAT('delivery exists, adding new line in existing contract and delivery for contract id = ', @pmweb_hdr_id)
 
 			DELETE FROM @Result;
 
@@ -543,6 +732,7 @@ IF @operation_flag = 'U' AND @IsReturnOrder = 0
 			SET process_status = 'E', error_msg = 'Error in change order creation. '+ERROR_MESSAGE(), operation_flag='I'
 			WHERE record_id = @record_id
 		END CATCH
+*/
 
 		COMMIT TRAN;
 
@@ -598,4 +788,5 @@ END CATCH
 SET NOCOUNT OFF
 END
 GO
+
 

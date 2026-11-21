@@ -79,7 +79,12 @@ public sealed class ShkrSalesOrderService(
         var staged = 0;
         var errors = new List<string>();
 
-        foreach (var order in orders)
+        var orderedOrders = orders
+            .OrderBy(o => o.SalesDocumentNumber.Length)
+            .ThenBy(o => o.SalesDocumentNumber, StringComparer.Ordinal)
+            .ToList();
+
+        foreach (var order in orderedOrders)
         {
             try
             {
@@ -123,38 +128,6 @@ public sealed class ShkrSalesOrderService(
         SqlConnection connection, SqlTransaction transaction, SalesOrderHeader o, DateTime now,
         CancellationToken cancellationToken)
     {
-        const string existsSql =
-            "SELECT COUNT(1) FROM dbo.xx_salesorder_hdr_stg_tbl_ib WHERE SalesDocumentNumber = @SalesDocumentNumber";
-
-        const string updateSql = """
-            UPDATE dbo.xx_salesorder_hdr_stg_tbl_ib
-            SET CreationDateTime = @CreationDateTime, DocumentDate = @DocumentDate,
-                IsReturnOrder = @IsReturnOrder, IsSaleOrder = @IsSaleOrder, ItemChangeDate = @ItemChangeDate,
-                LastUpdateDateTime = @LastUpdateDateTime, SalesOrg = @SalesOrg,
-                SoldToPartyNumber = @SoldToPartyNumber, AdvanceAmt = @AdvanceAmt,
-                AdvancePercentage = @AdvancePercentage, C4CProjectName = @C4CProjectName,
-                C4CProjectNumber = @C4CProjectNumber, CreatedByName = @CreatedByName, Currency = @Currency,
-                CustomerName = @CustomerName, Date_from = @DateFrom, Date_to = @DateTo,
-                DiscountAmount = @DiscountAmount, DistributionChannel = @DistributionChannel,
-                Division = @Division, DocumentStatus = @DocumentStatus,
-                DownPaymentCharges = @DownPaymentCharges, DownPaymentPercentage = @DownPaymentPercentage,
-                ExchangeRate = @ExchangeRate, ExpectedAwardDate = @ExpectedAwardDate,
-                ExpectedDeliveryDate = @ExpectedDeliveryDate, GrossPrice = @GrossPrice,
-                InstallationCharges = @InstallationCharges, Message = @Message,
-                NetValueWithoutTax = @NetValueWithoutTax, NetValueWithTax = @NetValueWithTax,
-                OrderReason = @OrderReason, OrderType = @OrderType, OrderTypeDesc = @OrderTypeDesc,
-                PaymentTerms = @PaymentTerms, ProgressUpdateDate = @ProgressUpdateDate,
-                RetentionAmt = @RetentionAmt, RetentionPercentage = @RetentionPercentage,
-                SalesGroup = @SalesGroup, SalesOffice = @SalesOffice,
-                SalesPersonCommission = @SalesPersonCommission, SalesPersonName = @SalesPersonName,
-                SalesPersonNumber = @SalesPersonNumber, ShipToPartyNumber = @ShipToPartyNumber,
-                VatAmount = @VatAmount, VatPercentage = @VatPercentage, Version = @Version,
-                operation_flag = @OperationFlag, process_status = @ProcessStatus, error_msg = NULL,
-                last_update_date = @StagingLastUpdateDate
-            OUTPUT INSERTED.record_id
-            WHERE SalesDocumentNumber = @SalesDocumentNumber
-            """;
-
         const string insertSql = """
             INSERT INTO dbo.xx_salesorder_hdr_stg_tbl_ib
                 (CreationDateTime, DocumentDate, IsReturnOrder, IsSaleOrder, ItemChangeDate,
@@ -181,10 +154,7 @@ public sealed class ShkrSalesOrderService(
                  @OperationFlag, @ProcessStatus, @StagingCreationDate, @StagingLastUpdateDate)
             """;
 
-        var exists = await RowExists(connection, transaction, existsSql, cancellationToken,
-            ("@SalesDocumentNumber", o.SalesDocumentNumber));
-
-        await using var command = new SqlCommand(exists ? updateSql : insertSql, connection, transaction);
+        await using var command = new SqlCommand(insertSql, connection, transaction);
         command.Parameters.AddWithValue("@CreationDateTime", (object?)o.CreationDateTime ?? DBNull.Value);
         command.Parameters.AddWithValue("@DocumentDate", (object?)o.DocumentDate ?? DBNull.Value);
         command.Parameters.AddWithValue("@IsReturnOrder", o.IsReturnOrder);
@@ -236,10 +206,7 @@ public sealed class ShkrSalesOrderService(
         command.Parameters.AddWithValue("@OperationFlag", "I");
         command.Parameters.AddWithValue("@ProcessStatus", "N");
         command.Parameters.AddWithValue("@StagingLastUpdateDate", now.Date);
-        if (!exists)
-        {
-            command.Parameters.AddWithValue("@StagingCreationDate", now.Date);
-        }
+        command.Parameters.AddWithValue("@StagingCreationDate", now.Date);
 
         return (long)(await command.ExecuteScalarAsync(cancellationToken))!;
     }
@@ -248,33 +215,6 @@ public sealed class ShkrSalesOrderService(
         SqlConnection connection, SqlTransaction transaction, string salesDocumentNumber, long hdrRecordId,
         IReadOnlyList<SalesOrderLine> lines, DateTime now, CancellationToken cancellationToken)
     {
-        const string existsSql = """
-            SELECT COUNT(1) FROM dbo.xx_salesorder_line_stg_tbl_ib
-            WHERE SalesDocumentNumber = @SalesDocumentNumber AND LineNumber = @LineNumber
-            """;
-
-        const string updateSql = """
-            UPDATE dbo.xx_salesorder_line_stg_tbl_ib
-            SET hdr_record_id = @HdrRecordId, ItemChangeDate = @ItemChangeDate, Material = @Material, ItemDescription = @ItemDescription,
-                WbsElement = @WbsElement, WbsDescription = @WbsDescription, ProjectCode = @ProjectCode,
-                ProjectDescription = @ProjectDescription, Quantity = @Quantity, Uom = @Uom, Plant = @Plant,
-                StorageLocation = @StorageLocation, GrossUnitPrice = @GrossUnitPrice,
-                TotalGrossAmount = @TotalGrossAmount, DiscPercentage = @DiscPercentage,
-                DiscAmount = @DiscAmount, TotalDiscAmount = @TotalDiscAmount, VatPercentage = @VatPercentage,
-                TotalVatAmount = @TotalVatAmount, NetValueWithTax = @NetValueWithTax,
-                AdvancePercentage = @AdvancePercentage, AdvanceAmt = @AdvanceAmt,
-                InstallationCharges = @InstallationCharges, DownPaymentPercentage = @DownPaymentPercentage,
-                DownPaymentCharges = @DownPaymentCharges, ReferenceDocument = @ReferenceDocument,
-                ReferenceDocumentItem = @ReferenceDocumentItem,
-                ReferenceDocumentCategory = @ReferenceDocumentCategory,
-                OriginalSalesOrder = @OriginalSalesOrder, OriginalSalesOrderItem = @OriginalSalesOrderItem,
-                RejectionReason = @RejectionReason, QuotationNumber = @QuotationNumber,
-                QuotationItem = @QuotationItem,
-                operation_flag = @OperationFlag, process_status = @ProcessStatus, error_msg = NULL,
-                last_update_date = @StagingLastUpdateDate
-            WHERE SalesDocumentNumber = @SalesDocumentNumber AND LineNumber = @LineNumber
-            """;
-
         const string insertSql = """
             INSERT INTO dbo.xx_salesorder_line_stg_tbl_ib
                 (hdr_record_id, ItemChangeDate, SalesDocumentNumber, LineNumber, Material, ItemDescription, WbsElement,
@@ -296,12 +236,13 @@ public sealed class ShkrSalesOrderService(
                  @OperationFlag, @ProcessStatus, @StagingCreationDate, @StagingLastUpdateDate)
             """;
 
-        foreach (var line in lines)
-        {
-            var exists = await RowExists(connection, transaction, existsSql, cancellationToken,
-                ("@SalesDocumentNumber", salesDocumentNumber), ("@LineNumber", line.LineNumber));
+        var orderedLines = lines
+            .OrderBy(l => l.LineNumber.Length)
+            .ThenBy(l => l.LineNumber, StringComparer.Ordinal);
 
-            await using var command = new SqlCommand(exists ? updateSql : insertSql, connection, transaction);
+        foreach (var line in orderedLines)
+        {
+            await using var command = new SqlCommand(insertSql, connection, transaction);
             command.Parameters.AddWithValue("@HdrRecordId", hdrRecordId);
             command.Parameters.AddWithValue("@ItemChangeDate", line.ItemChangeDate);
             command.Parameters.AddWithValue("@SalesDocumentNumber", salesDocumentNumber);
@@ -340,26 +281,9 @@ public sealed class ShkrSalesOrderService(
             command.Parameters.AddWithValue("@OperationFlag", "I");
             command.Parameters.AddWithValue("@ProcessStatus", "N");
             command.Parameters.AddWithValue("@StagingLastUpdateDate", now.Date);
-            if (!exists)
-            {
-                command.Parameters.AddWithValue("@StagingCreationDate", now.Date);
-            }
+            command.Parameters.AddWithValue("@StagingCreationDate", now.Date);
 
             await command.ExecuteNonQueryAsync(cancellationToken);
         }
-    }
-
-    private static async Task<bool> RowExists(
-        SqlConnection connection, SqlTransaction transaction, string existsSql, CancellationToken cancellationToken,
-        params (string Name, object Value)[] keyParameters)
-    {
-        await using var command = new SqlCommand(existsSql, connection, transaction);
-        foreach (var (name, value) in keyParameters)
-        {
-            command.Parameters.AddWithValue(name, value);
-        }
-
-        var count = (int)(await command.ExecuteScalarAsync(cancellationToken))!;
-        return count > 0;
     }
 }

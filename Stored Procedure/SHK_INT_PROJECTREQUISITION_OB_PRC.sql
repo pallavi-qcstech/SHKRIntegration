@@ -35,7 +35,7 @@ Change Log
 19/11/26 - Pallavi M - Line SHORT_TEXT now comes from the line description (Estimate_PreBidDetails.Description)
                        instead of the header (Estimate_PreBids.Description), cut to SAP's 40 characters.
                        The header staging description is not changed. A line with a blank description
-                       stops the PR before SAP is called (error, workflow returned, RETURN -1).
+                       stops the PR before SAP is called .
 
 */
 
