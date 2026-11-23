@@ -279,6 +279,27 @@ public sealed class ShkrBudgetCostPlanService(
             linesCommand.Parameters.AddWithValue("@HdrRecordId", hdrRecordId);
             await linesCommand.ExecuteNonQueryAsync(cancellationToken);
         }
+
+        if (status == StatusSuccess)
+        {
+            await UpdateProjectStatus(hdrRecordId, status, cancellationToken);
+        }
+    }
+
+    private async Task UpdateProjectStatus(long hdrRecordId, string status, CancellationToken cancellationToken)
+    {
+        await using var connection = new SqlConnection(_databaseOptions.ConnectionString);
+        await connection.OpenAsync(cancellationToken);
+
+        const string updateProjectStatusSql = """
+            UPDATE xx_budget_hdr_stg_tbl_ob SET sap_approval_status = 20
+            WHERE record_id = @record_id 
+            	AND project_code = (SELECT project_code FROM xx_budget_hdr_stg_tbl_ob WHERE record_id = @record_id)
+            """;
+
+        await using var headerCommand = new SqlCommand(updateProjectStatusSql, connection);
+        headerCommand.Parameters.AddWithValue("@record_id", hdrRecordId);
+        await headerCommand.ExecuteNonQueryAsync(cancellationToken);
     }
 
     private static string? GetString(SqlDataReader reader, string column)
