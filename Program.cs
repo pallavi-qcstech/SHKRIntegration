@@ -44,6 +44,7 @@ builder.Services.AddChangeOrder();
 builder.Services.AddReservations();
 builder.Services.AddMaterials();
 builder.Services.AddProductHierarchy();
+builder.Services.AddBudgetCostPlan();
 builder.Services.AddPrStatus(builder.Configuration);
 builder.Services.AddNetworkActivities(builder.Configuration);
 
