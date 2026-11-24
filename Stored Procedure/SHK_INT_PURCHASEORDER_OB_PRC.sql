@@ -82,7 +82,7 @@ Change Log
           Each line's PR item must be a service PR item (ITEM_CAT 9 in PR staging); a PR sent before
           the service PR change stops the PO before SAP is called.
           [TBC] Costcenter is in the sample payloads but is NOT sent - no PMWeb source agreed.
-          Needs the 24.11.2026 ALTER of xx_purchaseorder_line_stg_tbl_ob.
+          
 
 */
 
