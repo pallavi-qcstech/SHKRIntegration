@@ -9,3 +9,8 @@ public sealed class BudgetCostNetworkCreateResponse
 }
 
 public sealed record BudgetCostNetworkCreateResult(bool Success, string? Network, string? ErrorMessage);
+
+public sealed record BudgetCostHeaderResult(long HdrRecordId, string? Network, bool Success, string? ErrorMessage);
+
+public sealed record BudgetCostCreateResult(
+    long PmWebBudgetId, bool Success, int Networks, int Succeeded, int Failed, IReadOnlyList<BudgetCostHeaderResult> Results);
