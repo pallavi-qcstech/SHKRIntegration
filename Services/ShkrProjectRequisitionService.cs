@@ -63,7 +63,7 @@ public sealed class ShkrProjectRequisitionService(
         }
     }
 
-    private static CreateProjectRequisitionRequest BuildRequest(
+    public static CreateProjectRequisitionRequest BuildRequest(
         ProjectRequisitionHeader header, List<ProjectRequisitionLine> lines)
     {
         var request = new CreateProjectRequisitionRequest
@@ -91,8 +91,9 @@ public sealed class ShkrProjectRequisitionService(
                 DelivDate = line.DelivDate ?? string.Empty,
                 ItemCat = line.ItemCat ?? string.Empty,
                 AcctAssCat = line.AcctAssCat ?? string.Empty,
+                PckgNo = IsServiceLine(line) ? line.PckgNo ?? string.Empty : null,
                 CAmtBapi = FormatDecimal(line.PrebidAmount, "0.00"),
-                PriceUnit = line.PriceUnit ?? string.Empty,
+                PriceUnit = IsServiceLine(line) ? null : line.PriceUnit ?? string.Empty,
                 Currency = line.Currency ?? string.Empty,
             });
 
@@ -108,10 +109,46 @@ public sealed class ShkrProjectRequisitionService(
                 GlAcct = line.GlAcct ?? string.Empty,
                 CoArea = line.CoArea ?? string.Empty,
             });
+
+            if (!IsServiceLine(line))
+            {
+                continue;
+            }
+
+            request.ZSrvSet.Add(new PrServiceLineItem
+            {
+                PckgNo = line.PckgNo ?? string.Empty,
+                LineNo = line.OutlineLineNo ?? string.Empty,
+                OutlInd = "X",
+                SubpckgNo = line.SubpckgNo ?? string.Empty,
+            });
+
+            request.ZSrvSet.Add(new PrServiceLineItem
+            {
+                PckgNo = line.SubpckgNo ?? string.Empty,
+                LineNo = line.SrvLineNo ?? string.Empty,
+                ShortText = line.SrvShortText ?? string.Empty,
+                Quantity = FormatDecimal(line.SrvQuantity, "0.###"),
+                BaseUom = line.SrvUom ?? string.Empty,
+                GrPrice = FormatDecimal(line.SrvGrPrice, "0.00"),
+                MatlGroup = line.SrvMatlGroup ?? string.Empty,
+            });
+
+            request.SrvAccSet.Add(new PrServiceAccountItem
+            {
+                PckgNo = line.SubpckgNo ?? string.Empty,
+                LineNo = line.SrvLineNo ?? string.Empty,
+                SernoLine = line.SrvaccSernoLine ?? string.Empty,
+                SerialNo = line.SerialNo ?? string.Empty,
+                Percentage = FormatDecimal(line.SrvaccPercentage, "0.###"),
+                Quantity = FormatDecimal(line.SrvaccQuantity, "0.###"),
+            });
         }
 
         return request;
     }
+
+    private static bool IsServiceLine(ProjectRequisitionLine line) => line.ItemCat == "9";
 
     private static string FormatDecimal(decimal? value, string format) =>
         value?.ToString(format, CultureInfo.InvariantCulture) ?? string.Empty;
@@ -184,7 +221,9 @@ public sealed class ShkrProjectRequisitionService(
                 record_id, hdr_record_id, tracking_no, prebid_line_no, doc_type, short_text, material,
                 mat_grp, plant, pur_group, quantity, uom, prebid_date, rel_date, deliv_date,
                 item_cat, acctasscat, prebid_amount, price_unit, currency, prebid_no,
-                serial_no, wbs_element, network, activity, proj_ext, gl_acct, co_area
+                serial_no, wbs_element, network, activity, proj_ext, gl_acct, co_area,
+                pckg_no, outline_line_no, subpckg_no, srv_line_no, srv_short_text, srv_quantity,
+                srv_uom, srv_gr_price, srv_matl_group, srvacc_serno_line, srvacc_percentage, srvacc_quantity
             FROM dbo.xx_projectrequisition_line_stg_tbl_ob
             WHERE hdr_record_id = @HdrRecordId
             ORDER BY record_id ASC
@@ -230,6 +269,18 @@ public sealed class ShkrProjectRequisitionService(
                 ProjExt = GetString(reader, "proj_ext"),
                 GlAcct = GetString(reader, "gl_acct"),
                 CoArea = GetString(reader, "co_area"),
+                PckgNo = GetString(reader, "pckg_no"),
+                OutlineLineNo = GetString(reader, "outline_line_no"),
+                SubpckgNo = GetString(reader, "subpckg_no"),
+                SrvLineNo = GetString(reader, "srv_line_no"),
+                SrvShortText = GetString(reader, "srv_short_text"),
+                SrvQuantity = GetDecimal(reader, "srv_quantity"),
+                SrvUom = GetString(reader, "srv_uom"),
+                SrvGrPrice = GetDecimal(reader, "srv_gr_price"),
+                SrvMatlGroup = GetString(reader, "srv_matl_group"),
+                SrvaccSernoLine = GetString(reader, "srvacc_serno_line"),
+                SrvaccPercentage = GetDecimal(reader, "srvacc_percentage"),
+                SrvaccQuantity = GetDecimal(reader, "srvacc_quantity"),
             });
         }
 

@@ -36,6 +36,17 @@ Change Log
                        instead of the header (Estimate_PreBids.Description), cut to SAP's 40 characters.
                        The header staging description is not changed. A line with a blank description
                        stops the PR before SAP is called .
+24/11/26 - Pallavi M - Service PR: every PR line is sent as a service item (ITEM_CAT 9), following the
+                       payloads "Single line Single Item" / "Pr Multiline + service".
+                       Item quantity 1 and no PRICE_UNIT. Per line n: PCKG_NO 2n-1 (outline, LINE_NO 2n-1,
+                       SUBPCKG_NO 2n) and service package 2n (LINE_NO 2n): SHORT_TEXT = line description
+                       (40), QUANTITY 1, BASE_UOM = line UOM, GR_PRICE = EstimatedUnitCost,
+                       MATL_GROUP = PreBid SpecField3. SRVACCSet: SernoLine 01, Percentage 100, Quantity 1.
+                       A line with unit cost 0 or blank stops the PR before SAP is called.
+                       Service PRs are on Network + Activity only: a line on the WBS element path
+                       (CostCodes.Notes, no WBS selected) stops the PR before SAP is called.
+                       Project PR values kept in comments (---24/11/26 Project PR:) until clarified.
+                       Needs the 24.11.2026 ALTER of xx_projectrequisition_line_stg_tbl_ob.
 
 */
 
@@ -56,6 +67,8 @@ BEGIN
     DECLARE @con_error VARCHAR(MAX);
     DECLARE @bad_acct_lines VARCHAR(MAX);
     DECLARE @blank_text_lines VARCHAR(MAX);   -- 19/11/26 lines without a description (SHORT_TEXT)
+    DECLARE @no_price_lines VARCHAR(MAX);     -- 24/11/26 service lines without a unit cost (GR_PRICE)
+    DECLARE @wbs_srv_lines VARCHAR(MAX);      -- 24/11/26 service lines on the WBS element path (not Network + Activity)
     DECLARE @pr_doc_type NVARCHAR(200);
     DECLARE @bad_doc_type BIT;
     DECLARE @existing_pr NVARCHAR(100);
@@ -344,6 +357,8 @@ BEGIN
              plant, pur_group, quantity, uom, prebid_date, rel_date, deliv_date, item_cat,
              acctasscat, prebid_amount, price_unit, currency, prebid_no, serial_no,
              wbs_element, network, activity, proj_ext, gl_acct, co_area,
+             pckg_no, outline_line_no, subpckg_no, srv_line_no, srv_short_text, srv_quantity,   -- 24/11/26 service PR
+             srv_uom, srv_gr_price, srv_matl_group, srvacc_serno_line, srvacc_percentage, srvacc_quantity,
              process_status, operation_flag, creation_date, last_update_date)
         SELECT
             @hdr_record_id,
@@ -357,15 +372,15 @@ BEGIN
             pb.SpecField3,
             pgm.SpecField1,
             pgm.SpecField7,
-            d.Quantity,
+            1,   ---24/11/26 service PR: item QUANTITY 1.  ---24/11/26 Project PR: d.Quantity,
             LTRIM(RTRIM(LEFT(uom.UOM, CHARINDEX(' - ', uom.UOM + ' - ') - 1))),
             CONVERT(VARCHAR(10), pb.BidsDueDate, 104),
             CONVERT(VARCHAR(10), DATEADD(SECOND, CAST(pb.SpecField1 AS BIGINT) / 1000, '1970-01-01'), 104),
             CONVERT(VARCHAR(10), DATEADD(SECOND, CAST(pb.SpecField2 AS BIGINT) / 1000, '1970-01-01'), 104),
-            '',
+            '9',  ---24/11/26 service PR: ITEM_CAT 9.  ---24/11/26 Project PR: '',
             'P',  -- acctasscat: always P per explicit even on the network+activity (WBSId-populated) path
             d.EstimatedTotal,
-            '1',
+            NULL, ---24/11/26 service PR: PRICE_UNIT not sent (not in the samples).  ---24/11/26 Project PR: '1',
             cur.Code,
             '',  -- prebid_no (PreqNo): left blank on create, SAP assigns it
             '01',
@@ -378,6 +393,19 @@ BEGIN
             '',
             pgm.SpecField6,
             '1000',
+            ---24/11/26 service PR: line n -> outline package 2n-1 (LINE_NO 2n-1, SUBPCKG_NO 2n), service package 2n (LINE_NO 2n)
+            CAST(ROW_NUMBER() OVER (ORDER BY d.LineNumber) * 2 - 1 AS VARCHAR(10)),   -- pckg_no
+            CAST(ROW_NUMBER() OVER (ORDER BY d.LineNumber) * 2 - 1 AS VARCHAR(10)),   -- outline_line_no
+            CAST(ROW_NUMBER() OVER (ORDER BY d.LineNumber) * 2 AS VARCHAR(10)),       -- subpckg_no
+            CAST(ROW_NUMBER() OVER (ORDER BY d.LineNumber) * 2 AS VARCHAR(10)),       -- srv_line_no
+            LEFT(ISNULL(d.Description, ''), 40),                                      -- srv_short_text: same as the item text
+            1,                                                                        -- srv_quantity
+            LTRIM(RTRIM(LEFT(uom.UOM, CHARINDEX(' - ', uom.UOM + ' - ') - 1))),       -- srv_uom: same as the item UNIT
+            d.EstimatedUnitCost,                                                      -- srv_gr_price: price per unit
+            pb.SpecField3,                                                            -- srv_matl_group: same as MAT_GRP
+            '01',                                                                     -- srvacc_serno_line
+            100,                                                                      -- srvacc_percentage
+            1,                                                                        -- srvacc_quantity
             'N', 'I', GETDATE(), GETDATE()
         FROM dbo.Estimate_PreBids pb
         JOIN dbo.Projects proj ON proj.Id = pb.ProjectId
@@ -634,6 +662,115 @@ BEGIN
         BEGIN
             SET @ERROR_DESC = 'Item description is blank on line(s): ' + @blank_text_lines
                 + '. Each PR line needs a description (sent to SAP as short text, max 40 characters).';
+
+            UPDATE dbo.xx_projectrequisition_hdr_stg_tbl_ob
+            SET process_status = 'E', error_msg = LEFT(@ERROR_DESC, 2000), last_update_date = GETDATE()
+            WHERE record_id = @hdr_record_id;
+
+            UPDATE dbo.xx_projectrequisition_line_stg_tbl_ob
+            SET process_status = 'E', error_msg = LEFT(@ERROR_DESC, 2000), last_update_date = GETDATE()
+            WHERE hdr_record_id = @hdr_record_id;
+
+            UPDATE dbo.xx_integration_tbl
+            SET status = 'E', error_msg = @ERROR_DESC, last_update_date = GETDATE()
+            WHERE record_id = @queue_record_id;
+
+            IF @DocumentId IS NOT NULL
+            BEGIN
+                EXEC dbo.Workflow_ExecuteDocumentAction
+                    @StepActionGUID = '00000000-0000-0000-0000-000000000000'
+                    ,@ActionTypeId = 3
+                    ,@DeliveredToStepId = @PrevStepId
+                    ,@DelegateToIds = N'0'
+                    ,@TeamInputIds = N'0'
+                    ,@DocumentId = @DocumentId
+                    ,@ActionComment = @ERROR_DESC
+                    ,@UserId = 5
+                    ,@TeamInputCanEditRecord = 0
+                    ,@TeamInputCanEditNotes = 0
+                    ,@TeamInputCanEditAttachments = 0
+                    ,@ActionSource = N'Website';
+
+                EXEC dbo.Workflow_CalculateCurrentPendingStepId @DocumentId = @DocumentId;
+                EXEC dbo.Workflow_UpdateDocumentCurrentPendingStepId @DocumentId = @DocumentId, @CurrentPendingStepId = @PrevStepId;
+                EXEC dbo.Workflow_RecalculateDueDate @DocumentId = @DocumentId;
+            END
+
+            SELECT @ERROR_DESC AS Message;
+            RETURN -1;
+        END
+
+        ----------Service line unit cost (GR_PRICE) Validation---------  24/11/26
+        ---- Every service line needs a unit cost; it is sent to SAP as GR_PRICE (price per unit).
+
+        SET @no_price_lines = STUFF((
+            SELECT ', ' + ISNULL(l.prebid_line_no, '?')
+            FROM dbo.xx_projectrequisition_line_stg_tbl_ob l
+            WHERE l.hdr_record_id = @hdr_record_id
+              AND l.item_cat = '9'
+              AND ISNULL(l.srv_gr_price, 0) = 0
+            ORDER BY l.prebid_line_no
+            FOR XML PATH(''), TYPE).value('.', 'VARCHAR(MAX)'), 1, 2, '');
+
+        IF @no_price_lines IS NOT NULL
+        BEGIN
+            SET @ERROR_DESC = 'Unit cost is blank or 0 on line(s): ' + @no_price_lines
+                + '. Each service PR line needs a unit cost (sent to SAP as the service price).';
+
+            UPDATE dbo.xx_projectrequisition_hdr_stg_tbl_ob
+            SET process_status = 'E', error_msg = LEFT(@ERROR_DESC, 2000), last_update_date = GETDATE()
+            WHERE record_id = @hdr_record_id;
+
+            UPDATE dbo.xx_projectrequisition_line_stg_tbl_ob
+            SET process_status = 'E', error_msg = LEFT(@ERROR_DESC, 2000), last_update_date = GETDATE()
+            WHERE hdr_record_id = @hdr_record_id;
+
+            UPDATE dbo.xx_integration_tbl
+            SET status = 'E', error_msg = @ERROR_DESC, last_update_date = GETDATE()
+            WHERE record_id = @queue_record_id;
+
+            IF @DocumentId IS NOT NULL
+            BEGIN
+                EXEC dbo.Workflow_ExecuteDocumentAction
+                    @StepActionGUID = '00000000-0000-0000-0000-000000000000'
+                    ,@ActionTypeId = 3
+                    ,@DeliveredToStepId = @PrevStepId
+                    ,@DelegateToIds = N'0'
+                    ,@TeamInputIds = N'0'
+                    ,@DocumentId = @DocumentId
+                    ,@ActionComment = @ERROR_DESC
+                    ,@UserId = 5
+                    ,@TeamInputCanEditRecord = 0
+                    ,@TeamInputCanEditNotes = 0
+                    ,@TeamInputCanEditAttachments = 0
+                    ,@ActionSource = N'Website';
+
+                EXEC dbo.Workflow_CalculateCurrentPendingStepId @DocumentId = @DocumentId;
+                EXEC dbo.Workflow_UpdateDocumentCurrentPendingStepId @DocumentId = @DocumentId, @CurrentPendingStepId = @PrevStepId;
+                EXEC dbo.Workflow_RecalculateDueDate @DocumentId = @DocumentId;
+            END
+
+            SELECT @ERROR_DESC AS Message;
+            RETURN -1;
+        END
+
+        ----------Service line account assignment Validation---------  24/11/26
+        ---- Service PRs are on Network + Activity only. A service line on the WBS element path
+        ---- (no WBS selected, WBS element from CostCodes.Notes) stops the PR before SAP is called.
+
+        SET @wbs_srv_lines = STUFF((
+            SELECT ', ' + ISNULL(l.prebid_line_no, '?')
+            FROM dbo.xx_projectrequisition_line_stg_tbl_ob l
+            WHERE l.hdr_record_id = @hdr_record_id
+              AND l.item_cat = '9'
+              AND ISNULL(LTRIM(RTRIM(l.wbs_element)), '') <> ''
+            ORDER BY l.prebid_line_no
+            FOR XML PATH(''), TYPE).value('.', 'VARCHAR(MAX)'), 1, 2, '');
+
+        IF @wbs_srv_lines IS NOT NULL
+        BEGIN
+            SET @ERROR_DESC = 'Service PR lines must be on a Network and Activity. Please select an Activity in WBS on line(s): '
+                + @wbs_srv_lines + '.';
 
             UPDATE dbo.xx_projectrequisition_hdr_stg_tbl_ob
             SET process_status = 'E', error_msg = LEFT(@ERROR_DESC, 2000), last_update_date = GETDATE()

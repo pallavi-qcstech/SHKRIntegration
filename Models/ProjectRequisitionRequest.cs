@@ -7,9 +7,9 @@ public sealed class CreateProjectRequisitionRequest
     [JsonPropertyName("BANFN")] public string Banfn { get; set; } = string.Empty;
     [JsonPropertyName("BSART")] public string Bsart { get; set; } = string.Empty;
     [JsonPropertyName("PRHEADERSet")] public List<PrHeaderSetItem> PrHeaderSet { get; set; } = [];
-    [JsonPropertyName("ZSRVSet")] public List<object> ZSrvSet { get; set; } = [];
+    [JsonPropertyName("ZSRVSet")] public List<PrServiceLineItem> ZSrvSet { get; set; } = [];
     [JsonPropertyName("ACCOUNTSet")] public List<PrAccountSetItem> AccountSet { get; set; } = [];
-    [JsonPropertyName("SRVACCSet")] public List<object> SrvAccSet { get; set; } = [];
+    [JsonPropertyName("SRVACCSet")] public List<PrServiceAccountItem> SrvAccSet { get; set; } = [];
 }
 
 public sealed class PrHeaderSetItem
@@ -29,8 +29,9 @@ public sealed class PrHeaderSetItem
     [JsonPropertyName("DELIV_DATE")] public string DelivDate { get; set; } = string.Empty;
     [JsonPropertyName("ITEM_CAT")] public string ItemCat { get; set; } = string.Empty;
     [JsonPropertyName("ACCTASSCAT")] public string AcctAssCat { get; set; } = string.Empty;
+    [JsonPropertyName("PCKG_NO"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public string? PckgNo { get; set; }
     [JsonPropertyName("C_AMT_BAPI")] public string CAmtBapi { get; set; } = string.Empty;
-    [JsonPropertyName("PRICE_UNIT")] public string PriceUnit { get; set; } = string.Empty;
+    [JsonPropertyName("PRICE_UNIT"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public string? PriceUnit { get; set; }
     [JsonPropertyName("CURRENCY")] public string Currency { get; set; } = string.Empty;
 }
 
@@ -45,4 +46,27 @@ public sealed class PrAccountSetItem
     [JsonPropertyName("ProjExt")] public string ProjExt { get; set; } = string.Empty;
     [JsonPropertyName("GLAcct")] public string GlAcct { get; set; } = string.Empty;
     [JsonPropertyName("CoArea")] public string CoArea { get; set; } = string.Empty;
+}
+
+public sealed class PrServiceLineItem
+{
+    [JsonPropertyName("PCKG_NO")] public string PckgNo { get; set; } = string.Empty;
+    [JsonPropertyName("LINE_NO")] public string LineNo { get; set; } = string.Empty;
+    [JsonPropertyName("OUTL_IND"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public string? OutlInd { get; set; }
+    [JsonPropertyName("SUBPCKG_NO"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public string? SubpckgNo { get; set; }
+    [JsonPropertyName("SHORT_TEXT"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public string? ShortText { get; set; }
+    [JsonPropertyName("QUANTITY"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public string? Quantity { get; set; }
+    [JsonPropertyName("BASE_UOM"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public string? BaseUom { get; set; }
+    [JsonPropertyName("GR_PRICE"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public string? GrPrice { get; set; }
+    [JsonPropertyName("MATL_GROUP"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public string? MatlGroup { get; set; }
+}
+
+public sealed class PrServiceAccountItem
+{
+    [JsonPropertyName("PckgNo")] public string PckgNo { get; set; } = string.Empty;
+    [JsonPropertyName("LineNo")] public string LineNo { get; set; } = string.Empty;
+    [JsonPropertyName("SernoLine")] public string SernoLine { get; set; } = string.Empty;
+    [JsonPropertyName("SerialNo")] public string SerialNo { get; set; } = string.Empty;
+    [JsonPropertyName("Percentage")] public string Percentage { get; set; } = string.Empty;
+    [JsonPropertyName("Quantity")] public string Quantity { get; set; } = string.Empty;
 }

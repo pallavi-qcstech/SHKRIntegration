@@ -38,4 +38,17 @@ public sealed class ProjectRequisitionLine
     public string? ProjExt { get; set; }
     public string? GlAcct { get; set; }
     public string? CoArea { get; set; }
+
+    public string? PckgNo { get; set; }
+    public string? OutlineLineNo { get; set; }
+    public string? SubpckgNo { get; set; }
+    public string? SrvLineNo { get; set; }
+    public string? SrvShortText { get; set; }
+    public decimal? SrvQuantity { get; set; }
+    public string? SrvUom { get; set; }
+    public decimal? SrvGrPrice { get; set; }
+    public string? SrvMatlGroup { get; set; }
+    public string? SrvaccSernoLine { get; set; }
+    public decimal? SrvaccPercentage { get; set; }
+    public decimal? SrvaccQuantity { get; set; }
 }
