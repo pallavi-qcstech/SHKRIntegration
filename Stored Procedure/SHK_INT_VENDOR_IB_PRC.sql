@@ -1,10 +1,13 @@
 USE [PMWeb]
 GO
 
+/****** Object:  StoredProcedure [dbo].[SHK_INT_VENDOR_IB_PRC]    Script Date: 11/23/2026 12:14:38 PM ******/
 SET ANSI_NULLS ON
 GO
+
 SET QUOTED_IDENTIFIER ON
 GO
+
 
 
 
@@ -23,33 +26,34 @@ BEGIN
 
         DELETE a FROM dbo.xx_vendor_stg_tbl_ib a
         WHERE a.ProcessStatus = 'E'
-          AND EXISTS (SELECT 1 FROM dbo.xx_vendor_stg_tbl_ib x WHERE x.ProcessStatus = 'N' AND x.VendorID = a.VendorID);
+          AND EXISTS (SELECT 1 FROM dbo.xx_vendor_stg_tbl_ib x WHERE x.ProcessStatus = 'N' AND x.VendorID = a.VendorID AND ISNULL(x.PartnerType, '') = ISNULL(a.PartnerType, ''));
 
         DELETE a FROM dbo.xx_vendor_address_stg_tbl_ib a
         WHERE a.ProcessStatus = 'E'
-          AND EXISTS (SELECT 1 FROM dbo.xx_vendor_address_stg_tbl_ib x WHERE x.ProcessStatus = 'N' AND x.VendorID = a.VendorID AND x.AddressId = a.AddressId);
+          AND EXISTS (SELECT 1 FROM dbo.xx_vendor_address_stg_tbl_ib x WHERE x.ProcessStatus = 'N' AND x.VendorID = a.VendorID AND ISNULL(x.PartnerType, '') = ISNULL(a.PartnerType, '') AND x.AddressId = a.AddressId);
 
         DELETE a FROM dbo.xx_vendor_contacts_stg_tbl_ib a
         WHERE a.ProcessStatus = 'E'
-          AND EXISTS (SELECT 1 FROM dbo.xx_vendor_contacts_stg_tbl_ib x WHERE x.ProcessStatus = 'N' AND x.VendorID = a.VendorID AND x.ContactId = a.ContactId);
+          AND EXISTS (SELECT 1 FROM dbo.xx_vendor_contacts_stg_tbl_ib x WHERE x.ProcessStatus = 'N' AND x.VendorID = a.VendorID AND ISNULL(x.PartnerType, '') = ISNULL(a.PartnerType, '') AND x.ContactId = a.ContactId);
 
-        DELETE a FROM dbo.xx_vendor_company_map_stg_tl_ib a
+        DELETE a FROM dbo.xx_vendor_company_map_stg_tbl_ib a
         WHERE a.ProcessStatus = 'E'
-          AND EXISTS (SELECT 1 FROM dbo.xx_vendor_company_map_stg_tl_ib x WHERE x.ProcessStatus = 'N' AND x.VendorID = a.VendorID AND x.CompanyCode = a.CompanyCode AND x.ActiveFlag = a.ActiveFlag);
+          AND EXISTS (SELECT 1 FROM dbo.xx_vendor_company_map_stg_tbl_ib x WHERE x.ProcessStatus = 'N' AND x.VendorID = a.VendorID AND ISNULL(x.PartnerType, '') = ISNULL(a.PartnerType, '') AND x.CompanyCode = a.CompanyCode AND x.ActiveFlag = a.ActiveFlag);
 
         UPDATE m
         SET ProcessStatus = 'E',
             ProcessError = 'Duplicate CompanyCode with conflicting ActiveFlag values for this vendor.',
             LastUpdateDate = @Now
-        FROM dbo.xx_vendor_company_map_stg_tl_ib m
+        FROM dbo.xx_vendor_company_map_stg_tbl_ib m
         WHERE m.ProcessStatus = 'N'
           AND EXISTS (
               SELECT 1
-              FROM dbo.xx_vendor_company_map_stg_tl_ib d
+              FROM dbo.xx_vendor_company_map_stg_tbl_ib d
               WHERE d.VendorID = m.VendorID
+                AND ISNULL(d.PartnerType, '') = ISNULL(m.PartnerType, '')
                 AND d.CompanyCode = m.CompanyCode
                 AND d.ProcessStatus = 'N'
-              GROUP BY d.VendorID, d.CompanyCode
+              GROUP BY d.VendorID, ISNULL(d.PartnerType, ''), d.CompanyCode
               HAVING COUNT(*) > 1
           );
 
@@ -73,6 +77,8 @@ BEGIN
             @ActiveFlag    VARCHAR(1),
             @OperationFlag VARCHAR(1),
             @IsActive      BIT,
+            @PartnerType   VARCHAR(1),
+            @CompanyTypeId BIGINT,
             @CountryId     BIGINT,
             @NameId        BIGINT,
             @DestVendorId  BIGINT,
@@ -80,14 +86,15 @@ BEGIN
 
         DECLARE vendor_cursor CURSOR LOCAL FAST_FORWARD FOR
             SELECT VendorID, VendorCode, VendorName, VendorType, Country, City, POBox, PostalCode,
-                   AddressLine1, AddressLine2, Street, Telephone1, Telephone2, Fax, EmailAddress, ActiveFlag, OperationFlag
+                   AddressLine1, AddressLine2, Street, Telephone1, Telephone2, Fax, EmailAddress, ActiveFlag, PartnerType, OperationFlag
             FROM dbo.xx_vendor_stg_tbl_ib
-            WHERE ProcessStatus = 'N';
+            WHERE ProcessStatus = 'N'
+            ORDER BY VendorID, PartnerType;
 
         OPEN vendor_cursor;
         FETCH NEXT FROM vendor_cursor INTO
             @VendorID, @VendorCode, @VendorName, @VendorType, @Country, @City, @POBox, @PostalCode,
-            @AddressLine1, @AddressLine2, @Street, @Telephone1, @Telephone2, @Fax, @EmailAddress, @ActiveFlag, @OperationFlag;
+            @AddressLine1, @AddressLine2, @Street, @Telephone1, @Telephone2, @Fax, @EmailAddress, @ActiveFlag, @PartnerType, @OperationFlag;
 
         WHILE @@FETCH_STATUS = 0
         BEGIN
@@ -95,6 +102,19 @@ BEGIN
             SET @ErrorDesc = '';
             SET @DestVendorId = NULL;
             SET @DestVendorAddressId = NULL;
+            SET @CompanyTypeId = NULL;
+
+            IF ISNULL(@PartnerType, '') NOT IN ('V', 'C')
+                SELECT @ErrorStatus = 1, @ErrorDesc = @ErrorDesc + 'Unknown partner type ''' + ISNULL(@PartnerType, 'NULL') + '''. ';
+
+            IF @ErrorStatus = 0
+            BEGIN
+                SET @CompanyTypeId = (SELECT TOP 1 Id FROM dbo.CompanyTypes
+                                      WHERE [Type] = CASE @PartnerType WHEN 'V' THEN N'03. Sub-Contractor'
+                                                                       WHEN 'C' THEN N'05. Client / Customer' END);
+                IF @CompanyTypeId IS NULL
+                    SELECT @ErrorStatus = 1, @ErrorDesc = @ErrorDesc + 'Company type not found in dbo.CompanyTypes for partner type ''' + @PartnerType + '''. ';
+            END
 
             SET @IsActive = CASE WHEN (@ActiveFlag = 'Y' OR @ActiveFlag IS NULL OR @ActiveFlag = '') THEN 1 ELSE 0 END;
 
@@ -121,6 +141,8 @@ BEGIN
                     SET CompanyName    = @VendorName,
                         CountryId      = @CountryId,
                         IsActive       = @IsActive,
+                        CompanyTypeId  = @CompanyTypeId,
+                        Elevation      = @VendorType,
                         Reference      = CAST(@VendorID AS VARCHAR(20)),
                         LastUpdatedBy  = 5,
                         LastUpdateDate = GETDATE()
@@ -129,9 +151,9 @@ BEGIN
                 ELSE
                 BEGIN
                     INSERT INTO dbo.Companies
-                        (CompanyName, CompanyCode, CompanyTypeId, IsActive, CreateDate, CreatedBy, CountryId, Reference)
+                        (CompanyName, CompanyCode, CompanyTypeId, Elevation, IsActive, CreateDate, CreatedBy, CountryId, Reference)
                     VALUES
-                        (@VendorName, @VendorCode, NULL, @IsActive, GETDATE(), 5, @CountryId, CAST(@VendorID AS VARCHAR(20)));
+                        (@VendorName, @VendorCode, @CompanyTypeId, @VendorType, @IsActive, GETDATE(), 5, @CountryId, CAST(@VendorID AS VARCHAR(20)));
 
                     SET @DestVendorId = SCOPE_IDENTITY();
                 END
@@ -158,13 +180,13 @@ BEGIN
 
                 UPDATE dbo.xx_vendor_stg_tbl_ib
                 SET ProcessStatus = 'S', ProcessError = 'Vendor processed successfully', pmwebCompanyId = @DestVendorId, LastUpdateDate = @Now
-                WHERE VendorID = @VendorID AND ProcessStatus = 'N';
+                WHERE VendorID = @VendorID AND ISNULL(PartnerType, '') = ISNULL(@PartnerType, '') AND ProcessStatus = 'N';
             END
             ELSE
             BEGIN
                 UPDATE dbo.xx_vendor_stg_tbl_ib
                 SET ProcessStatus = 'E', ProcessError = @ErrorDesc, LastUpdateDate = @Now
-                WHERE VendorID = @VendorID AND ProcessStatus = 'N';
+                WHERE VendorID = @VendorID AND ISNULL(PartnerType, '') = ISNULL(@PartnerType, '') AND ProcessStatus = 'N';
             END
 
             DECLARE
@@ -187,7 +209,7 @@ BEGIN
             DECLARE address_cursor CURSOR LOCAL FAST_FORWARD FOR
                 SELECT AddressId, AddressLine1, AddressLine2, Street, City, POBox, PostalCode, Country, ActiveFlag, OperationFlag
                 FROM dbo.xx_vendor_address_stg_tbl_ib
-                WHERE VendorID = @VendorID AND ProcessStatus = 'N'
+                WHERE VendorID = @VendorID AND ISNULL(PartnerType, '') = ISNULL(@PartnerType, '') AND ProcessStatus = 'N'
                 ORDER BY AddressId;
 
             OPEN address_cursor;
@@ -231,20 +253,20 @@ BEGIN
 
                         UPDATE dbo.xx_vendor_address_stg_tbl_ib
                         SET ProcessStatus = 'S', ProcessError = 'Address processed successfully', pmwebAddressId = @DestAddressId, LastUpdateDate = @Now
-                        WHERE VendorID = @VendorID AND AddressId = @AddrAddressId AND ProcessStatus = 'N';
+                        WHERE VendorID = @VendorID AND ISNULL(PartnerType, '') = ISNULL(@PartnerType, '') AND AddressId = @AddrAddressId AND ProcessStatus = 'N';
                     END
                     ELSE
                     BEGIN
                         UPDATE dbo.xx_vendor_address_stg_tbl_ib
                         SET ProcessStatus = 'E', ProcessError = @AddrErrorDesc, LastUpdateDate = @Now
-                        WHERE VendorID = @VendorID AND AddressId = @AddrAddressId AND ProcessStatus = 'N';
+                        WHERE VendorID = @VendorID AND ISNULL(PartnerType, '') = ISNULL(@PartnerType, '') AND AddressId = @AddrAddressId AND ProcessStatus = 'N';
                     END
                 END
                 ELSE
                 BEGIN
                     UPDATE dbo.xx_vendor_address_stg_tbl_ib
                     SET ProcessStatus = 'E', ProcessError = 'Parent vendor failed validation. ' + @ErrorDesc, LastUpdateDate = @Now
-                    WHERE VendorID = @VendorID AND AddressId = @AddrAddressId AND ProcessStatus = 'N';
+                    WHERE VendorID = @VendorID AND ISNULL(PartnerType, '') = ISNULL(@PartnerType, '') AND AddressId = @AddrAddressId AND ProcessStatus = 'N';
                 END
 
                 FETCH NEXT FROM address_cursor INTO
@@ -271,7 +293,8 @@ BEGIN
             DECLARE contact_cursor CURSOR LOCAL FAST_FORWARD FOR
                 SELECT ContactId, FirstName, LastName, Title, Telephone1, Telephone2, Fax, EmailAddress, ActiveFlag, OperationFlag
                 FROM dbo.xx_vendor_contacts_stg_tbl_ib
-                WHERE VendorID = @VendorID AND ProcessStatus = 'N';
+                WHERE VendorID = @VendorID AND ISNULL(PartnerType, '') = ISNULL(@PartnerType, '') AND ProcessStatus = 'N'
+                ORDER BY ContactId;
 
             OPEN contact_cursor;
             FETCH NEXT FROM contact_cursor INTO
@@ -308,7 +331,7 @@ BEGIN
 
                     UPDATE dbo.xx_vendor_contacts_stg_tbl_ib
                     SET ProcessStatus = 'S', ProcessError = 'Contact processed successfully', pmwebContactId = @DestContactId, LastUpdateDate = @Now
-                    WHERE VendorID = @VendorID AND ContactId = @ContContactId AND ProcessStatus = 'N';
+                    WHERE VendorID = @VendorID AND ISNULL(PartnerType, '') = ISNULL(@PartnerType, '') AND ContactId = @ContContactId AND ProcessStatus = 'N';
                 END
                 ELSE
                 BEGIN
@@ -317,7 +340,7 @@ BEGIN
                         ProcessError = CASE WHEN @ErrorStatus <> 0 THEN 'Parent vendor failed validation. ' + @ErrorDesc
                                              ELSE 'No header address available to link this contact to. ' END,
                         LastUpdateDate = @Now
-                    WHERE VendorID = @VendorID AND ContactId = @ContContactId AND ProcessStatus = 'N';
+                    WHERE VendorID = @VendorID AND ISNULL(PartnerType, '') = ISNULL(@PartnerType, '') AND ContactId = @ContContactId AND ProcessStatus = 'N';
                 END
 
                 FETCH NEXT FROM contact_cursor INTO
@@ -333,17 +356,18 @@ BEGIN
 
             DECLARE company_cursor CURSOR LOCAL FAST_FORWARD FOR
                 SELECT CompanyCode, ActiveFlag, OperationFlag
-                FROM dbo.xx_vendor_company_map_stg_tl_ib
-                WHERE VendorID = @VendorID AND ProcessStatus = 'N';
+                FROM dbo.xx_vendor_company_map_stg_tbl_ib
+                WHERE VendorID = @VendorID AND ISNULL(PartnerType, '') = ISNULL(@PartnerType, '') AND ProcessStatus = 'N'
+                ORDER BY CompanyCode, ActiveFlag;
 
             OPEN company_cursor;
             FETCH NEXT FROM company_cursor INTO @MapCompanyCode, @MapActiveFlag, @MapOperationFlag;
 
             WHILE @@FETCH_STATUS = 0
             BEGIN
-                UPDATE dbo.xx_vendor_company_map_stg_tl_ib
+                UPDATE dbo.xx_vendor_company_map_stg_tbl_ib
                 SET ProcessStatus = 'S', ProcessError = 'Staged only - no PMWeb destination table defined yet.', LastUpdateDate = @Now
-                WHERE VendorID = @VendorID AND CompanyCode = @MapCompanyCode AND ProcessStatus = 'N';
+                WHERE VendorID = @VendorID AND ISNULL(PartnerType, '') = ISNULL(@PartnerType, '') AND CompanyCode = @MapCompanyCode AND ProcessStatus = 'N';
 
                 FETCH NEXT FROM company_cursor INTO @MapCompanyCode, @MapActiveFlag, @MapOperationFlag;
             END
@@ -352,7 +376,7 @@ BEGIN
 
             FETCH NEXT FROM vendor_cursor INTO
                 @VendorID, @VendorCode, @VendorName, @VendorType, @Country, @City, @POBox, @PostalCode,
-                @AddressLine1, @AddressLine2, @Street, @Telephone1, @Telephone2, @Fax, @EmailAddress, @ActiveFlag, @OperationFlag;
+                @AddressLine1, @AddressLine2, @Street, @Telephone1, @Telephone2, @Fax, @EmailAddress, @ActiveFlag, @PartnerType, @OperationFlag;
         END
 
         CLOSE vendor_cursor;
@@ -365,4 +389,7 @@ BEGIN
         THROW;
     END CATCH
 END
+
 GO
+
+

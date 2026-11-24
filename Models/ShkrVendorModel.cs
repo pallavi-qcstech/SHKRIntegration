@@ -31,6 +31,7 @@ public sealed class VendorDetail
     [JsonPropertyName("Fax")] public string Fax { get; set; } = string.Empty;
     [JsonPropertyName("EmailAddress")] public string EmailAddress { get; set; } = string.Empty;
     [JsonPropertyName("ActiveFlag")] public string ActiveFlag { get; set; } = string.Empty;
+    [JsonPropertyName("PartnerType")] public string PartnerType { get; set; } = string.Empty;
 
     [JsonPropertyName("VendorAddressSet")]
     public ODataResultSet<VendorAddress> VendorAddressSet { get; set; } = new();

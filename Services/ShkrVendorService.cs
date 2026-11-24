@@ -143,7 +143,11 @@ public sealed class ShkrVendorService(
             vendorId, startDate, endDate);
 
         var allVendors = await GetAllVendors(startDate, endDate, vendorId, cancellationToken);
-        var vendors = allVendors.VendorDetailsSet.Results;
+        var vendors = allVendors.VendorDetailsSet.Results
+            .OrderBy(v => NumericKey(v.VendorId))
+            .ThenBy(v => v.VendorId, StringComparer.Ordinal)
+            .ThenBy(v => v.PartnerType ?? string.Empty, StringComparer.Ordinal)
+            .ToList();
 
         var errors = new List<string>();
         var processed = 0;
@@ -277,6 +281,7 @@ public sealed class ShkrVendorService(
         var requestBody = new
         {
             VendorID = vendorId,
+            PartnerType = string.Empty,
             Start_Date = startDate,
             End_Date = endDate,
             VendorDetailsSet = new object[]
@@ -299,6 +304,7 @@ public sealed class ShkrVendorService(
                     Fax = string.Empty,
                     EmailAddress = string.Empty,
                     ActiveFlag = string.Empty,
+                    PartnerType = string.Empty,
                     VendorAddressSet = Array.Empty<object>(),
                     VendorContactSet = Array.Empty<object>(),
                     VendorCompanySet = Array.Empty<object>()
@@ -329,6 +335,7 @@ public sealed class ShkrVendorService(
     public async Task SaveVendor(long vendorId, VendorDetail detail, CancellationToken cancellationToken = default)
     {
         var now = DateTime.Now;
+        var partnerType = detail.PartnerType ?? string.Empty;
 
         await using var connection = new SqlConnection(_databaseOptions.ConnectionString);
         await connection.OpenAsync(cancellationToken);
@@ -336,10 +343,23 @@ public sealed class ShkrVendorService(
 
         try
         {
-            await SaveVendorDetails(connection, transaction, vendorId, [detail], now, cancellationToken);
-            await SaveVendorAddresses(connection, transaction, vendorId, detail.VendorAddressSet.Results, now, cancellationToken);
-            await SaveVendorContacts(connection, transaction, vendorId, detail.VendorContactSet.Results, now, cancellationToken);
-            await SaveVendorCompanies(connection, transaction, vendorId, detail.VendorCompanySet.Results, now, cancellationToken);
+            await SaveVendorDetails(connection, transaction, vendorId, partnerType, [detail], now, cancellationToken);
+            var addresses = detail.VendorAddressSet.Results
+                .OrderBy(a => NumericKey(a.AddressId))
+                .ThenBy(a => a.AddressId, StringComparer.Ordinal)
+                .ToList();
+            var contacts = detail.VendorContactSet.Results
+                .OrderBy(c => NumericKey(c.ContactId))
+                .ThenBy(c => c.ContactId, StringComparer.Ordinal)
+                .ToList();
+            var companies = detail.VendorCompanySet.Results
+                .OrderBy(c => c.CompanyCode, StringComparer.Ordinal)
+                .ThenBy(c => c.ActiveFlag, StringComparer.Ordinal)
+                .ToList();
+
+            await SaveVendorAddresses(connection, transaction, vendorId, partnerType, addresses, now, cancellationToken);
+            await SaveVendorContacts(connection, transaction, vendorId, partnerType, contacts, now, cancellationToken);
+            await SaveVendorCompanies(connection, transaction, vendorId, partnerType, companies, now, cancellationToken);
 
             await transaction.CommitAsync(cancellationToken);
         }
@@ -351,10 +371,10 @@ public sealed class ShkrVendorService(
     }
 
     private static async Task SaveVendorDetails(
-        SqlConnection connection, SqlTransaction transaction, long vendorId,
+        SqlConnection connection, SqlTransaction transaction, long vendorId, string partnerType,
         IReadOnlyList<VendorDetail> details, DateTime now, CancellationToken cancellationToken)
     {
-        const string existsSql = "SELECT COUNT(1) FROM dbo.xx_vendor_stg_tbl_ib WHERE VendorID = @VendorID";
+        const string existsSql = "SELECT COUNT(1) FROM dbo.xx_vendor_stg_tbl_ib WHERE VendorID = @VendorID AND PartnerType = @PartnerType";
 
         const string updateSql = """
             UPDATE dbo.xx_vendor_stg_tbl_ib
@@ -364,16 +384,16 @@ public sealed class ShkrVendorService(
                 Fax = @Fax, EmailAddress = @EmailAddress, ActiveFlag = @ActiveFlag,
                 OperationFlag = @OperationFlag, ProcessStatus = @ProcessStatus, ProcessError = NULL,
                 LastUpdateDate = @LastUpdateDate
-            WHERE VendorID = @VendorID
+            WHERE VendorID = @VendorID AND PartnerType = @PartnerType
             """;
 
         const string insertSql = """
             INSERT INTO dbo.xx_vendor_stg_tbl_ib
-                (VendorID, VendorCode, VendorName, VendorType, Country, City, POBox, PostalCode,
+                (VendorID, PartnerType, VendorCode, VendorName, VendorType, Country, City, POBox, PostalCode,
                  AddressLine1, AddressLine2, Street, Telephone1, Telephone2, Fax, EmailAddress, ActiveFlag,
                  OperationFlag, ProcessStatus, CreatedDate, LastUpdateDate)
             VALUES
-                (@VendorID, @VendorCode, @VendorName, @VendorType, @Country, @City, @POBox, @PostalCode,
+                (@VendorID, @PartnerType, @VendorCode, @VendorName, @VendorType, @Country, @City, @POBox, @PostalCode,
                  @AddressLine1, @AddressLine2, @Street, @Telephone1, @Telephone2, @Fax, @EmailAddress, @ActiveFlag,
                  @OperationFlag, @ProcessStatus, @CreatedDate, @LastUpdateDate)
             """;
@@ -381,10 +401,11 @@ public sealed class ShkrVendorService(
         foreach (var detail in details)
         {
             var exists = await RowExists(connection, transaction, existsSql, cancellationToken,
-                ("@VendorID", vendorId));
+                ("@VendorID", vendorId), ("@PartnerType", partnerType));
 
             await using var command = new SqlCommand(exists ? updateSql : insertSql, connection, transaction);
             command.Parameters.AddWithValue("@VendorID", vendorId);
+            command.Parameters.AddWithValue("@PartnerType", partnerType);
             command.Parameters.AddWithValue("@VendorCode", detail.VendorCode);
             command.Parameters.AddWithValue("@VendorName", detail.VendorName);
             command.Parameters.AddWithValue("@VendorType", detail.VendorType);
@@ -406,11 +427,11 @@ public sealed class ShkrVendorService(
     }
 
     private async Task SaveVendorAddresses(
-        SqlConnection connection, SqlTransaction transaction, long vendorId,
+        SqlConnection connection, SqlTransaction transaction, long vendorId, string partnerType,
         IReadOnlyList<VendorAddress> addresses, DateTime now, CancellationToken cancellationToken)
     {
         const string existsSql = """
-            SELECT COUNT(1) FROM dbo.xx_vendor_address_stg_tbl_ib WHERE VendorID = @VendorID AND AddressId = @AddressId
+            SELECT COUNT(1) FROM dbo.xx_vendor_address_stg_tbl_ib WHERE VendorID = @VendorID AND PartnerType = @PartnerType AND AddressId = @AddressId
             """;
 
         const string updateSql = """
@@ -419,15 +440,15 @@ public sealed class ShkrVendorService(
                 POBox = @POBox, PostalCode = @PostalCode, Country = @Country, ActiveFlag = @ActiveFlag,
                 OperationFlag = @OperationFlag, ProcessStatus = @ProcessStatus, ProcessError = NULL,
                 LastUpdateDate = @LastUpdateDate
-            WHERE VendorID = @VendorID AND AddressId = @AddressId
+            WHERE VendorID = @VendorID AND PartnerType = @PartnerType AND AddressId = @AddressId
             """;
 
         const string insertSql = """
             INSERT INTO dbo.xx_vendor_address_stg_tbl_ib
-                (VendorID, AddressId, AddressLine1, AddressLine2, Street, City, POBox, PostalCode, Country, ActiveFlag,
+                (VendorID, PartnerType, AddressId, AddressLine1, AddressLine2, Street, City, POBox, PostalCode, Country, ActiveFlag,
                  OperationFlag, ProcessStatus, CreatedDate, LastUpdateDate)
             VALUES
-                (@VendorID, @AddressId, @AddressLine1, @AddressLine2, @Street, @City, @POBox, @PostalCode, @Country, @ActiveFlag,
+                (@VendorID, @PartnerType, @AddressId, @AddressLine1, @AddressLine2, @Street, @City, @POBox, @PostalCode, @Country, @ActiveFlag,
                  @OperationFlag, @ProcessStatus, @CreatedDate, @LastUpdateDate)
             """;
 
@@ -442,10 +463,11 @@ public sealed class ShkrVendorService(
             }
 
             var exists = await RowExists(connection, transaction, existsSql, cancellationToken,
-                ("@VendorID", vendorId), ("@AddressId", addressId));
+                ("@VendorID", vendorId), ("@PartnerType", partnerType), ("@AddressId", addressId));
 
             await using var command = new SqlCommand(exists ? updateSql : insertSql, connection, transaction);
             command.Parameters.AddWithValue("@VendorID", vendorId);
+            command.Parameters.AddWithValue("@PartnerType", partnerType);
             command.Parameters.AddWithValue("@AddressId", addressId);
             command.Parameters.AddWithValue("@AddressLine1", address.AddressLine1);
             command.Parameters.AddWithValue("@AddressLine2", address.AddressLine2);
@@ -461,11 +483,11 @@ public sealed class ShkrVendorService(
     }
 
     private async Task SaveVendorContacts(
-        SqlConnection connection, SqlTransaction transaction, long vendorId,
+        SqlConnection connection, SqlTransaction transaction, long vendorId, string partnerType,
         IReadOnlyList<VendorContact> contacts, DateTime now, CancellationToken cancellationToken)
     {
         const string existsSql = """
-            SELECT COUNT(1) FROM dbo.xx_vendor_contacts_stg_tbl_ib WHERE VendorID = @VendorID AND ContactId = @ContactId
+            SELECT COUNT(1) FROM dbo.xx_vendor_contacts_stg_tbl_ib WHERE VendorID = @VendorID AND PartnerType = @PartnerType AND ContactId = @ContactId
             """;
 
         const string updateSql = """
@@ -474,15 +496,15 @@ public sealed class ShkrVendorService(
                 Telephone2 = @Telephone2, Fax = @Fax, EmailAddress = @EmailAddress, ActiveFlag = @ActiveFlag,
                 OperationFlag = @OperationFlag, ProcessStatus = @ProcessStatus, ProcessError = NULL,
                 LastUpdateDate = @LastUpdateDate
-            WHERE VendorID = @VendorID AND ContactId = @ContactId
+            WHERE VendorID = @VendorID AND PartnerType = @PartnerType AND ContactId = @ContactId
             """;
 
         const string insertSql = """
             INSERT INTO dbo.xx_vendor_contacts_stg_tbl_ib
-                (VendorID, ContactId, FirstName, LastName, Title, Telephone1, Telephone2, Fax, EmailAddress, ActiveFlag,
+                (VendorID, PartnerType, ContactId, FirstName, LastName, Title, Telephone1, Telephone2, Fax, EmailAddress, ActiveFlag,
                  OperationFlag, ProcessStatus, CreatedDate, LastUpdateDate)
             VALUES
-                (@VendorID, @ContactId, @FirstName, @LastName, @Title, @Telephone1, @Telephone2, @Fax, @EmailAddress, @ActiveFlag,
+                (@VendorID, @PartnerType, @ContactId, @FirstName, @LastName, @Title, @Telephone1, @Telephone2, @Fax, @EmailAddress, @ActiveFlag,
                  @OperationFlag, @ProcessStatus, @CreatedDate, @LastUpdateDate)
             """;
 
@@ -497,10 +519,11 @@ public sealed class ShkrVendorService(
             }
 
             var exists = await RowExists(connection, transaction, existsSql, cancellationToken,
-                ("@VendorID", vendorId), ("@ContactId", contactId));
+                ("@VendorID", vendorId), ("@PartnerType", partnerType), ("@ContactId", contactId));
 
             await using var command = new SqlCommand(exists ? updateSql : insertSql, connection, transaction);
             command.Parameters.AddWithValue("@VendorID", vendorId);
+            command.Parameters.AddWithValue("@PartnerType", partnerType);
             command.Parameters.AddWithValue("@ContactId", contactId);
             command.Parameters.AddWithValue("@FirstName", contact.FirstName);
             command.Parameters.AddWithValue("@LastName", contact.LastName);
@@ -516,38 +539,39 @@ public sealed class ShkrVendorService(
     }
 
     private static async Task SaveVendorCompanies(
-        SqlConnection connection, SqlTransaction transaction, long vendorId,
+        SqlConnection connection, SqlTransaction transaction, long vendorId, string partnerType,
         IReadOnlyList<VendorCompany> companies, DateTime now, CancellationToken cancellationToken)
     {
         const string existsSql = """
-            SELECT COUNT(1) FROM dbo.xx_vendor_company_map_stg_tl_ib
-            WHERE VendorID = @VendorID AND CompanyCode = @CompanyCode AND ActiveFlag = @ActiveFlag
+            SELECT COUNT(1) FROM dbo.xx_vendor_company_map_stg_tbl_ib
+            WHERE VendorID = @VendorID AND PartnerType = @PartnerType AND CompanyCode = @CompanyCode AND ActiveFlag = @ActiveFlag
             """;
 
         const string updateSql = """
-            UPDATE dbo.xx_vendor_company_map_stg_tl_ib
+            UPDATE dbo.xx_vendor_company_map_stg_tbl_ib
             SET PaymentTerms = @PaymentTerms,
                 OperationFlag = @OperationFlag, ProcessStatus = @ProcessStatus, ProcessError = NULL,
                 LastUpdateDate = @LastUpdateDate
-            WHERE VendorID = @VendorID AND CompanyCode = @CompanyCode AND ActiveFlag = @ActiveFlag
+            WHERE VendorID = @VendorID AND PartnerType = @PartnerType AND CompanyCode = @CompanyCode AND ActiveFlag = @ActiveFlag
             """;
 
         const string insertSql = """
-            INSERT INTO dbo.xx_vendor_company_map_stg_tl_ib
-                (VendorID, CompanyCode, ActiveFlag, PaymentTerms,
+            INSERT INTO dbo.xx_vendor_company_map_stg_tbl_ib
+                (VendorID, PartnerType, CompanyCode, ActiveFlag, PaymentTerms,
                  OperationFlag, ProcessStatus, CreatedDate, LastUpdateDate)
             VALUES
-                (@VendorID, @CompanyCode, @ActiveFlag, @PaymentTerms,
+                (@VendorID, @PartnerType, @CompanyCode, @ActiveFlag, @PaymentTerms,
                  @OperationFlag, @ProcessStatus, @CreatedDate, @LastUpdateDate)
             """;
 
         foreach (var company in companies)
         {
             var exists = await RowExists(connection, transaction, existsSql, cancellationToken,
-                ("@VendorID", vendorId), ("@CompanyCode", company.CompanyCode), ("@ActiveFlag", company.ActiveFlag));
+                ("@VendorID", vendorId), ("@PartnerType", partnerType), ("@CompanyCode", company.CompanyCode), ("@ActiveFlag", company.ActiveFlag));
 
             await using var command = new SqlCommand(exists ? updateSql : insertSql, connection, transaction);
             command.Parameters.AddWithValue("@VendorID", vendorId);
+            command.Parameters.AddWithValue("@PartnerType", partnerType);
             command.Parameters.AddWithValue("@CompanyCode", company.CompanyCode);
             command.Parameters.AddWithValue("@ActiveFlag", company.ActiveFlag);
             command.Parameters.AddWithValue("@PaymentTerms", DBNull.Value);
@@ -555,6 +579,9 @@ public sealed class ShkrVendorService(
             await command.ExecuteNonQueryAsync(cancellationToken);
         }
     }
+
+    private static long NumericKey(string? value) =>
+        long.TryParse(value, out var number) ? number : long.MaxValue;
 
     private static void AddTrackingParameters(SqlCommand command, DateTime now)
     {
