@@ -63,7 +63,11 @@ public sealed class ShkrPurchaseOrderService(
         }
     }
 
-    private static CreatePurchaseOrderRequest BuildRequest(
+    // 24/11/26 service PO (every PO is a service PO): per Commitment line one PO item (ItemCat 9,
+    // quantity 1, no NetPrice/PriceUnit) + one POSRVSet service line (quantity = line quantity,
+    // GrPrice = unit cost) + one POACCOUNTSet row (Network + Activity). No POSCHEDSet.
+    // Costcenter is NOT sent (in the sample payloads, no PMWeb source agreed) - [TBC].
+    public static CreatePurchaseOrderRequest BuildRequest(
         PurchaseOrderHeader header, List<PurchaseOrderLine> lines)
     {
         var request = new CreatePurchaseOrderRequest
@@ -79,40 +83,41 @@ public sealed class ShkrPurchaseOrderService(
 
         foreach (var line in lines)
         {
-            var quantity = FormatDecimal(line.Quantity, "0.000");
+            var poItem = line.PoItem ?? string.Empty;
 
             request.PoItemSet.Add(new PoItemSetItem
             {
-                PoItem = line.PoItem ?? string.Empty,
+                PoItem = poItem,
+                ItemCat = line.ItemCat ?? string.Empty,
                 ShortText = line.ShortText ?? string.Empty,
                 Plant = line.Plant ?? string.Empty,
                 MatlGroup = line.MatGrp ?? string.Empty,
-                Quantity = quantity,
+                Quantity = FormatDecimal(line.Quantity, "0.###"),
                 PoUnit = line.PoUnit ?? string.Empty,
-                NetPrice = FormatDecimal(line.NetPrice, "0.00"),
-                PriceUnit = line.PriceUnit ?? string.Empty,
                 TaxCode = line.TaxCode ?? string.Empty,
                 AcctAssCat = line.AcctAssCat ?? string.Empty,
                 PreqItem = line.PreqItem ?? string.Empty,
                 PreqNo = line.PreqNo ?? string.Empty,
             });
 
-            request.PoSchedSet.Add(new PoSchedSetItem
-            {
-                PoItem = line.PoItem ?? string.Empty,
-                SchedLine = "0001",
-                DeliveryDate = line.DeliveryDate ?? string.Empty,
-                Quantity = quantity,
-            });
-
             request.PoAccountSet.Add(new PoAccountSetItem
             {
-                PoItem = line.PoItem ?? string.Empty,
+                PoItem = poItem,
                 SerialNo = "01",
                 GlAccount = line.GlAccount ?? string.Empty,
                 WbsElement = NullIfBlank(line.WbsElement),
                 Network = NullIfBlank(line.Network),
                 Activity = NullIfBlank(line.Activity),
+            });
+
+            request.PoSrvSet.Add(new PoServiceSetItem
+            {
+                PoItem = poItem,
+                ShortText = line.SrvShortText ?? string.Empty,
+                Quantity = FormatDecimal(line.SrvQuantity, "0.###"),
+                BaseUom = line.SrvUom ?? string.Empty,
+                GrPrice = FormatDecimal(line.SrvGrPrice, "0.##"),
+                MatlGroup = line.SrvMatlGroup ?? string.Empty,
             });
         }
 
@@ -196,7 +201,8 @@ public sealed class ShkrPurchaseOrderService(
             SELECT
                 record_id, hdr_record_id, po_item, short_text, mat_grp, plant, quantity, po_unit,
                 net_price, price_unit, tax_code, acctasscat, wbs_element, gl_account,
-                network, activity, preq_no, preq_item, delivery_date
+                network, activity, preq_no, preq_item, delivery_date,
+                item_cat, srv_short_text, srv_quantity, srv_uom, srv_gr_price, srv_matl_group
             FROM dbo.xx_purchaseorder_line_stg_tbl_ob
             WHERE hdr_record_id = @HdrRecordId
             ORDER BY record_id ASC
@@ -233,6 +239,12 @@ public sealed class ShkrPurchaseOrderService(
                 PreqNo = GetString(reader, "preq_no"),
                 PreqItem = GetString(reader, "preq_item"),
                 DeliveryDate = GetString(reader, "delivery_date"),
+                ItemCat = GetString(reader, "item_cat"),
+                SrvShortText = GetString(reader, "srv_short_text"),
+                SrvQuantity = GetDecimal(reader, "srv_quantity"),
+                SrvUom = GetString(reader, "srv_uom"),
+                SrvGrPrice = GetDecimal(reader, "srv_gr_price"),
+                SrvMatlGroup = GetString(reader, "srv_matl_group"),
             });
         }
 

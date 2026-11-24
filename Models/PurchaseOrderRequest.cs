@@ -12,32 +12,25 @@ public sealed class CreatePurchaseOrderRequest
     [JsonPropertyName("Currency")] public string Currency { get; set; } = string.Empty;
     [JsonPropertyName("DocDate")] public string DocDate { get; set; } = string.Empty;
     [JsonPropertyName("POITEMSet")] public List<PoItemSetItem> PoItemSet { get; set; } = [];
-    [JsonPropertyName("POSCHEDSet")] public List<PoSchedSetItem> PoSchedSet { get; set; } = [];
+    // 24/11/26 service PO: POSCHEDSet no longer sent (SAP builds the schedule line itself, spec v1.3 section 7)
     [JsonPropertyName("POACCOUNTSet")] public List<PoAccountSetItem> PoAccountSet { get; set; } = [];
+    [JsonPropertyName("POSRVSet")] public List<PoServiceSetItem> PoSrvSet { get; set; } = [];
 }
 
 public sealed class PoItemSetItem
 {
     [JsonPropertyName("PoItem")] public string PoItem { get; set; } = string.Empty;
+    [JsonPropertyName("ItemCat")] public string ItemCat { get; set; } = string.Empty;
     [JsonPropertyName("ShortText")] public string ShortText { get; set; } = string.Empty;
     [JsonPropertyName("Plant")] public string Plant { get; set; } = string.Empty;
     [JsonPropertyName("MatlGroup")] public string MatlGroup { get; set; } = string.Empty;
     [JsonPropertyName("Quantity")] public string Quantity { get; set; } = string.Empty;
     [JsonPropertyName("PoUnit")] public string PoUnit { get; set; } = string.Empty;
-    [JsonPropertyName("NetPrice")] public string NetPrice { get; set; } = string.Empty;
-    [JsonPropertyName("PriceUnit")] public string PriceUnit { get; set; } = string.Empty;
+    // 24/11/26 service PO: NetPrice / PriceUnit not sent - the item value comes from the service line (spec v1.3 section 10)
     [JsonPropertyName("TaxCode")] public string TaxCode { get; set; } = string.Empty;
     [JsonPropertyName("Acctasscat")] public string AcctAssCat { get; set; } = string.Empty;
     [JsonPropertyName("PreqItem")] public string PreqItem { get; set; } = string.Empty;
     [JsonPropertyName("PreqNo")] public string PreqNo { get; set; } = string.Empty;
-}
-
-public sealed class PoSchedSetItem
-{
-    [JsonPropertyName("PoItem")] public string PoItem { get; set; } = string.Empty;
-    [JsonPropertyName("SchedLine")] public string SchedLine { get; set; } = string.Empty;
-    [JsonPropertyName("DeliveryDate")] public string DeliveryDate { get; set; } = string.Empty;
-    [JsonPropertyName("Quantity")] public string Quantity { get; set; } = string.Empty;
 }
 
 public sealed class PoAccountSetItem
@@ -57,4 +50,16 @@ public sealed class PoAccountSetItem
     [JsonPropertyName("Activity")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? Activity { get; set; }
+}
+
+// 24/11/26 service PO: one planned service line per PO item, linked by PoItem.
+// Package numbers are drawn by Z_PO_CREATE_SRV, nothing about packages is sent.
+public sealed class PoServiceSetItem
+{
+    [JsonPropertyName("PoItem")] public string PoItem { get; set; } = string.Empty;
+    [JsonPropertyName("ShortText")] public string ShortText { get; set; } = string.Empty;
+    [JsonPropertyName("Quantity")] public string Quantity { get; set; } = string.Empty;
+    [JsonPropertyName("BaseUom")] public string BaseUom { get; set; } = string.Empty;
+    [JsonPropertyName("GrPrice")] public string GrPrice { get; set; } = string.Empty;
+    [JsonPropertyName("MatlGroup")] public string MatlGroup { get; set; } = string.Empty;
 }

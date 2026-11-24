@@ -11,12 +11,12 @@ GO
 SHK_INT_PURCHASEORDER_OB_PRC PO Outbound stored procedure (PMWeb -> SAP) 
 Purchase Order Create via Z_PO_CREATE_SRV SAP API
 
-SCOPE: create-only, "item without material", ACCTASSCAT='P'
+SCOPE: create-only, SERVICE PO (ItemCat 9), ACCTASSCAT='P' on Network + Activity (since 24/11/26;
+was "item without material" with WBS element or Network + Activity)
 
 MANDATORY parameters: PO Document Type on the project,
-po_item, quantity > 0, delivery_date (not before today), tax_code, mat_grp
-, preq_no, preq_item, and a valid account assignment (WBS element only, or
-Network + Activity only .
+po_item, line quantity > 0, unit cost > 0, tax_code, mat_grp
+, preq_no, preq_item (a service PR item, ITEM_CAT 9), and Network + Activity.
 
 preq_item is CostManagement_CommitmentDetails.MfrNumber .PR Outbound writes the 
 PR's own item number into Estimate_PreBidDetails.MfrNumber on success
@@ -68,6 +68,22 @@ Change Log
           The 'P' row also gets erp_txn_number = SAP PO number, so that SHK_INT_APPROVE_PO_IB_PRC
           picks it up.
 
+24/11/26  Service PO: every PO is a service PO, following the service PR and the payloads
+          "Po mulitipe Line item with single service" / "single Po line item with single service".
+          Per Commitment line: one PO item (ItemCat 9, quantity 1, no NetPrice / PriceUnit) and one
+          POSRVSet service line: ShortText = line description (40), Quantity = line quantity,
+          BaseUom = line UOM, GrPrice = line UnitCost, MatlGroup = item mat_grp. Package numbers are
+          drawn by SAP. Item value in SAP = line quantity x unit cost.
+          POSCHEDSet is no longer sent (SAP builds the schedule line), so the Scheduled Delivery Date
+          mandatory / past-date checks of 11/11/26 are removed. delivery_date and net_price are still
+          staged for reference only.
+          Service POs are on Network + Activity only: a line on the WBS element path (no Activity
+          selected) stops the PO before SAP is called (same as service PR).
+          Each line's PR item must be a service PR item (ITEM_CAT 9 in PR staging); a PR sent before
+          the service PR change stops the PO before SAP is called.
+          [TBC] Costcenter is in the sample payloads but is NOT sent - no PMWeb source agreed.
+          Needs the 24.11.2026 ALTER of xx_purchaseorder_line_stg_tbl_ob.
+
 */
 
 ALTER PROC [dbo].[SHK_INT_PURCHASEORDER_OB_PRC]
@@ -87,10 +103,10 @@ BEGIN
     DECLARE @con_error VARCHAR(MAX);
 
     DECLARE @bad_item_qty BIT;
-    DECLARE @bad_deliv BIT;
-    DECLARE @bad_deliv_past BIT;
-    DECLARE @deliv_past_date VARCHAR(10);
+    -- 24/11/26 @bad_deliv / @bad_deliv_past / @deliv_past_date removed: no POSCHEDSet on a service PO
     DECLARE @NL CHAR(2) = CHAR(13) + CHAR(10);
+    DECLARE @non_srv_pr_lines VARCHAR(MAX);   -- 24/11/26 lines whose PR item is not a service PR item
+    DECLARE @wbs_srv_lines VARCHAR(MAX);      -- 24/11/26 lines on the WBS element path (not Network + Activity)
     DECLARE @bad_tax BIT;
     DECLARE @bad_preq_no BIT;
     DECLARE @bad_preq_item BIT;
@@ -383,6 +399,7 @@ BEGIN
                 (hdr_record_id, po_item, short_text, mat_grp, plant, quantity, po_unit, net_price,
                  price_unit, tax_code, acctasscat, wbs_element, gl_account,
                  network, activity, preq_no, preq_item, delivery_date, commitment_detail_id,
+                 item_cat, srv_short_text, srv_quantity, srv_uom, srv_gr_price, srv_matl_group,   -- 24/11/26 service PO
                  process_status, operation_flag, creation_date, last_update_date)
             SELECT
                 @hdr_record_id,
@@ -390,10 +407,10 @@ BEGIN
                 LEFT(ISNULL(d.Description, ''), 40),
                 NULLIF(LTRIM(RTRIM(pb.SpecField3)), ''),  -- mat_grp: same as PR (Estimate_PreBids.SpecField3)
                 pgm.SpecField1,                        -- plant: same as PR
-                d.Quantity,
+                1,                                     ---24/11/26 service PO: item quantity 1 (line quantity is on the service line).  Before: d.Quantity,
                 LTRIM(RTRIM(LEFT(uom.UOM, CHARINDEX(' - ', uom.UOM + ' - ') - 1))),
-                d.ExtCost,                             -- net_price: line total, same as PR -
-                '1',                                   -- price_unit
+                d.ExtCost,                             -- net_price: line total - 24/11/26 staged for reference only, NOT sent
+                '1',                                   -- price_unit - 24/11/26 NOT sent (service item)
                 -- NULL when missing, so the mandatory check below rejects it
                 CASE WHEN LEN(taxres.TaxCode) = 2 THEN taxres.TaxCode END,
                 'P',
@@ -410,8 +427,16 @@ BEGIN
                                                         -- PMWeb from Estimate_PreBidDetails.MfrNumber (PR
                                                         -- Outbound write-back) through Estimate_ProcurementDetails
                                                         -- to this CommitmentDetails row
-                CONVERT(VARCHAR(10), h.ScheduledDeliveryDate, 104),  -- delivery_date: DD.MM.YYYY
+                CONVERT(VARCHAR(10), h.ScheduledDeliveryDate, 104),  -- delivery_date: DD.MM.YYYY - 24/11/26 reference only, NOT sent (no POSCHEDSet)
                 d.Id,                                  -- commitment_detail_id: for the Field10 write-back
+                ---24/11/26 service PO: ItemCat 9 + one POSRVSet service line per PO item
+                '9',                                                                      -- item_cat
+                LEFT(ISNULL(d.Description, ''), 40),                                      -- srv_short_text: same as the item text
+                d.Quantity,                                                               -- srv_quantity: line quantity
+                LTRIM(RTRIM(LEFT(uom.UOM, CHARINDEX(' - ', uom.UOM + ' - ') - 1))),       -- srv_uom: same as po_unit
+                d.UnitCost,                                                               -- srv_gr_price: price per unit (rounded to 2 decimals)
+                NULLIF(LTRIM(RTRIM(pb.SpecField3)), ''),                                  -- srv_matl_group: same as mat_grp
+                -- [TBC] Costcenter: in the sample payloads, not sent - no PMWeb source agreed
                 'N', 'I', GETDATE(), GETDATE()
             FROM dbo.CostManagement_CommitmentDetails d
             JOIN dbo.CostManagement_Commitments h ON h.Id = d.CommitmentId
@@ -565,19 +590,16 @@ BEGIN
 
         ----------Mandatory Field Validation---------
         SELECT
+            -- 24/11/26 service PO: the line quantity is on the service line (srv_quantity), the item quantity is always 1
             @bad_item_qty = MAX(CASE WHEN po_item IS NULL OR LTRIM(RTRIM(po_item)) = ''
-                                       OR quantity IS NULL OR quantity <= 0 THEN 1 ELSE 0 END),
-            @bad_deliv    = MAX(CASE WHEN delivery_date IS NULL OR LTRIM(RTRIM(delivery_date)) = '' THEN 1 ELSE 0 END),
-            -- delivery_date is staged as DD.MM.YYYY (style 104) from the Commitment's Scheduled Delivery Date
-            @bad_deliv_past = MAX(CASE WHEN LTRIM(RTRIM(ISNULL(delivery_date, ''))) <> ''
-                                        AND CONVERT(DATE, delivery_date, 104) < CAST(GETDATE() AS DATE) THEN 1 ELSE 0 END),
-            @deliv_past_date = MAX(CASE WHEN LTRIM(RTRIM(ISNULL(delivery_date, ''))) <> ''
-                                         AND CONVERT(DATE, delivery_date, 104) < CAST(GETDATE() AS DATE) THEN delivery_date ELSE '' END),
+                                       OR srv_quantity IS NULL OR srv_quantity <= 0 THEN 1 ELSE 0 END),
+            -- 24/11/26 delivery date checks removed: no POSCHEDSet on a service PO
             @bad_tax     = MAX(CASE WHEN tax_code IS NULL OR LEN(tax_code) <> 2 THEN 1 ELSE 0 END),
             @bad_preq_no  = MAX(CASE WHEN preq_no IS NULL OR LTRIM(RTRIM(preq_no)) = '' THEN 1 ELSE 0 END),
             @bad_preq_item = MAX(CASE WHEN preq_item IS NULL OR LTRIM(RTRIM(preq_item)) = '' THEN 1 ELSE 0 END),
             @bad_uom      = MAX(CASE WHEN po_unit IS NULL OR LTRIM(RTRIM(po_unit)) = '' THEN 1 ELSE 0 END),
-            @bad_price    = MAX(CASE WHEN net_price IS NULL OR net_price <= 0 THEN 1 ELSE 0 END),
+            -- 24/11/26 service PO: the price sent is the unit cost (GrPrice), checked after rounding to 2 decimals
+            @bad_price    = MAX(CASE WHEN srv_gr_price IS NULL OR srv_gr_price <= 0 THEN 1 ELSE 0 END),
             @bad_mat_grp  = MAX(CASE WHEN mat_grp IS NULL OR LTRIM(RTRIM(mat_grp)) = '' THEN 1 ELSE 0 END)
         FROM dbo.xx_purchaseorder_line_stg_tbl_ob
         WHERE hdr_record_id = @hdr_record_id;
@@ -588,7 +610,7 @@ BEGIN
         FROM dbo.xx_purchaseorder_hdr_stg_tbl_ob
         WHERE record_id = @hdr_record_id;
 
-        IF @bad_doc_type = 1 OR @bad_item_qty = 1 OR @bad_deliv = 1 OR @bad_deliv_past = 1 OR @bad_tax = 1 OR @bad_preq_no = 1
+        IF @bad_doc_type = 1 OR @bad_item_qty = 1 OR @bad_tax = 1 OR @bad_preq_no = 1
            OR @bad_preq_item = 1 OR @bad_uom = 1 OR @bad_price = 1 OR @bad_mat_grp = 1 OR @bad_vendor = 1 OR @bad_currency = 1
         BEGIN
             -- one line per failing field; STUFF removes the leading line break
@@ -598,14 +620,130 @@ BEGIN
                 + CASE WHEN @bad_currency = 1 THEN @NL + 'Currency missing on the Commitment header.' ELSE '' END
                 + CASE WHEN @bad_item_qty = 1 THEN @NL + 'Line item number and quantity must not be blank/zero.' ELSE '' END
                 + CASE WHEN @bad_uom = 1 THEN @NL + 'Unit of measure missing on one or more Commitment lines.' ELSE '' END
-                + CASE WHEN @bad_price = 1 THEN @NL + 'Amount must be greater than zero on every Commitment line.' ELSE '' END
+                + CASE WHEN @bad_price = 1 THEN @NL + 'Unit cost must be greater than zero on every Commitment line (sent to SAP as the service price).' ELSE '' END
                 + CASE WHEN @bad_mat_grp = 1 THEN @NL + 'Material group missing on the PreBid (PR) this Commitment was generated from - it must be filled, as it is sent to SAP on the PR.' ELSE '' END
-                + CASE WHEN @bad_deliv = 1 THEN @NL + 'Delivery date missing (Scheduled Delivery Date on the Commitment).' ELSE '' END
-                + CASE WHEN @bad_deliv_past = 1 THEN @NL + 'Scheduled Delivery Date on the Commitment (' + @deliv_past_date + ') is in the past - it must be today or a later date.' ELSE '' END
                 + CASE WHEN @bad_tax = 1 THEN @NL + 'Tax code missing or invalid (Commitment SpecField1 must start with a 2-character SAP tax code, e.g. ''V2-...'').' ELSE '' END
                 + CASE WHEN @bad_preq_no = 1 THEN @NL + 'SAP PR number missing - the Commitment must come from a Procurement generated from a PR that was successfully sent to SAP.' ELSE '' END
                 + CASE WHEN @bad_preq_item = 1 THEN @NL + 'PR item not found - one or more Commitment lines have no MfrNumber (PR line reference) carried forward from the PreBid line.' ELSE '' END,
                 1, 2, '');
+
+            UPDATE dbo.xx_purchaseorder_hdr_stg_tbl_ob
+            SET process_status = 'E', error_msg = LEFT(@ERROR_DESC, 2000), last_update_date = GETDATE()
+            WHERE record_id = @hdr_record_id;
+
+            UPDATE dbo.xx_purchaseorder_line_stg_tbl_ob
+            SET process_status = 'E', error_msg = LEFT(@ERROR_DESC, 2000), last_update_date = GETDATE()
+            WHERE hdr_record_id = @hdr_record_id;
+
+            UPDATE dbo.xx_integration_tbl
+            SET status = 'E', error_msg = @ERROR_DESC, last_update_date = GETDATE()
+            WHERE record_id = @queue_record_id;
+
+            IF @DocumentId IS NOT NULL
+            BEGIN
+                EXEC dbo.Workflow_ExecuteDocumentAction
+                    @StepActionGUID = '00000000-0000-0000-0000-000000000000'
+                    ,@ActionTypeId = 3
+                    ,@DeliveredToStepId = @PrevStepId
+                    ,@DelegateToIds = N'0'
+                    ,@TeamInputIds = N'0'
+                    ,@DocumentId = @DocumentId
+                    ,@ActionComment = @ERROR_DESC
+                    ,@UserId = 5
+                    ,@TeamInputCanEditRecord = 0
+                    ,@TeamInputCanEditNotes = 0
+                    ,@TeamInputCanEditAttachments = 0
+                    ,@ActionSource = N'Website';
+
+                EXEC dbo.Workflow_CalculateCurrentPendingStepId @DocumentId = @DocumentId;
+                EXEC dbo.Workflow_UpdateDocumentCurrentPendingStepId @DocumentId = @DocumentId, @CurrentPendingStepId = @PrevStepId;
+                EXEC dbo.Workflow_RecalculateDueDate @DocumentId = @DocumentId;
+            END
+
+            SELECT @ERROR_DESC AS Message;
+            RETURN -1;
+        END
+
+        ----------Service PR item Validation---------  24/11/26
+        ---- Every PO is a service PO (ItemCat 9), so each line's PR item must be a service PR item:
+        ---- the PR line that was sent to SAP successfully (PR staging header sap_pr_id = preq_no,
+        ---- process_status 'S', line prebid_line_no = preq_item) must have item_cat '9'. A PR sent
+        ---- before the service PR change (or not found in PR staging) stops the PO before SAP is called.
+
+        SET @non_srv_pr_lines = STUFF((
+            SELECT ', ' + ISNULL(l.po_item, '?') + ' (PR ' + ISNULL(l.preq_no, '?') + ' item ' + ISNULL(l.preq_item, '?') + ')'
+            FROM dbo.xx_purchaseorder_line_stg_tbl_ob l
+            WHERE l.hdr_record_id = @hdr_record_id
+              AND NOT EXISTS (
+                    SELECT 1
+                    FROM dbo.xx_projectrequisition_hdr_stg_tbl_ob prh
+                    JOIN dbo.xx_projectrequisition_line_stg_tbl_ob prl ON prl.hdr_record_id = prh.record_id
+                    WHERE LTRIM(RTRIM(prh.sap_pr_id)) = LTRIM(RTRIM(l.preq_no))
+                      AND prh.process_status = 'S'
+                      AND LTRIM(RTRIM(prl.prebid_line_no)) = LTRIM(RTRIM(l.preq_item))
+                      AND prl.item_cat = '9')
+            ORDER BY l.po_item
+            FOR XML PATH(''), TYPE).value('.', 'VARCHAR(MAX)'), 1, 2, '');
+
+        IF @non_srv_pr_lines IS NOT NULL
+        BEGIN
+            SET @ERROR_DESC = 'Every PO is created as a service PO, but the PR item of line(s) ' + @non_srv_pr_lines
+                + ' was not created as a service PR item (or was not found in the PR integration records). '
+                + 'The PO must come from a service PR.';
+
+            UPDATE dbo.xx_purchaseorder_hdr_stg_tbl_ob
+            SET process_status = 'E', error_msg = LEFT(@ERROR_DESC, 2000), last_update_date = GETDATE()
+            WHERE record_id = @hdr_record_id;
+
+            UPDATE dbo.xx_purchaseorder_line_stg_tbl_ob
+            SET process_status = 'E', error_msg = LEFT(@ERROR_DESC, 2000), last_update_date = GETDATE()
+            WHERE hdr_record_id = @hdr_record_id;
+
+            UPDATE dbo.xx_integration_tbl
+            SET status = 'E', error_msg = @ERROR_DESC, last_update_date = GETDATE()
+            WHERE record_id = @queue_record_id;
+
+            IF @DocumentId IS NOT NULL
+            BEGIN
+                EXEC dbo.Workflow_ExecuteDocumentAction
+                    @StepActionGUID = '00000000-0000-0000-0000-000000000000'
+                    ,@ActionTypeId = 3
+                    ,@DeliveredToStepId = @PrevStepId
+                    ,@DelegateToIds = N'0'
+                    ,@TeamInputIds = N'0'
+                    ,@DocumentId = @DocumentId
+                    ,@ActionComment = @ERROR_DESC
+                    ,@UserId = 5
+                    ,@TeamInputCanEditRecord = 0
+                    ,@TeamInputCanEditNotes = 0
+                    ,@TeamInputCanEditAttachments = 0
+                    ,@ActionSource = N'Website';
+
+                EXEC dbo.Workflow_CalculateCurrentPendingStepId @DocumentId = @DocumentId;
+                EXEC dbo.Workflow_UpdateDocumentCurrentPendingStepId @DocumentId = @DocumentId, @CurrentPendingStepId = @PrevStepId;
+                EXEC dbo.Workflow_RecalculateDueDate @DocumentId = @DocumentId;
+            END
+
+            SELECT @ERROR_DESC AS Message;
+            RETURN -1;
+        END
+
+        ----------Service line account assignment Validation---------  24/11/26
+        ---- Service POs are on Network + Activity only (same as service PR). A line on the WBS element
+        ---- path (no WBS selected, WBS element from CostCodes.Notes) stops the PO before SAP is called.
+
+        SET @wbs_srv_lines = STUFF((
+            SELECT ', ' + ISNULL(l.po_item, '?')
+            FROM dbo.xx_purchaseorder_line_stg_tbl_ob l
+            WHERE l.hdr_record_id = @hdr_record_id
+              AND ISNULL(LTRIM(RTRIM(l.wbs_element)), '') <> ''
+            ORDER BY l.po_item
+            FOR XML PATH(''), TYPE).value('.', 'VARCHAR(MAX)'), 1, 2, '');
+
+        IF @wbs_srv_lines IS NOT NULL
+        BEGIN
+            SET @ERROR_DESC = 'Service PO lines must be on a Network and Activity. Please select an Activity in WBS on line(s): '
+                + @wbs_srv_lines + '.';
 
             UPDATE dbo.xx_purchaseorder_hdr_stg_tbl_ob
             SET process_status = 'E', error_msg = LEFT(@ERROR_DESC, 2000), last_update_date = GETDATE()
@@ -692,8 +830,7 @@ BEGIN
 
         IF @acct_error IS NULL AND @bad_acct_lines IS NOT NULL
             SET @acct_error = 'Invalid account assignment on line(s): ' + @bad_acct_lines
-                + '. Each line needs either a Cost Code whose Notes holds the SAP WBS element (WBS left blank),'
-                + ' or a WBS selection that is an Activity under a Network.';
+                + '. Each line needs a WBS selection that is an Activity under a Network.';   -- 24/11/26 service PO: Network + Activity only
 
         IF @acct_error IS NOT NULL
         BEGIN
