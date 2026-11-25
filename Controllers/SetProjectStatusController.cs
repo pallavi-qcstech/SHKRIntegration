@@ -9,9 +9,9 @@ public sealed class SetProjectStatusController(ShkrSetProjectStatusService proje
 {
     [HttpPost("setProjectStatus")]
     public async Task<IActionResult> SetUserStatus(
-        [FromQuery] string? projectDefinition, [FromQuery] string? userStatus, CancellationToken cancellationToken)
+        [FromQuery] string? projectCode, [FromQuery] string? userStatus, CancellationToken cancellationToken)
     {
-        var result = await projectStatusService.SetUserStatusAsync(projectDefinition, userStatus, cancellationToken);
+        var result = await projectStatusService.SetUserStatusAsync(projectCode, userStatus, cancellationToken);
         return StatusCode(result.ReplyStatusCode, result);
     }
 }

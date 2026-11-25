@@ -17,7 +17,7 @@ public sealed class ShkrSetProjectStatusService(
 
     public const string ServicePath = "/sap/opu/odata/sap/ZPS_PROJ_STATUS_SRV/";
     public const string EntitySet = "ProjectStatusSet";
-    public const int ProjectDefinitionMaxLength = 24;
+    public const int ProjectCodeMaxLength = 24;
     public const string AllowedUserStatus = "20";
 
     private const string CsrfHeaderName = "x-csrf-token";
@@ -30,9 +30,9 @@ public sealed class ShkrSetProjectStatusService(
     private readonly ShkrSapApiOptions _options = shkrSapOptions.Value;
 
     public async Task<SetProjectStatusResult> SetUserStatusAsync(
-        string? projectDefinition, string? userStatus, CancellationToken cancellationToken = default)
+        string? projectCode, string? userStatus, CancellationToken cancellationToken = default)
     {
-        var project = projectDefinition?.Trim() ?? string.Empty;
+        var project = projectCode?.Trim() ?? string.Empty;
         var status = userStatus?.Trim() ?? string.Empty;
 
         var inputError = ValidateInput(project, status);
@@ -102,11 +102,11 @@ public sealed class ShkrSetProjectStatusService(
 
         if (project.Length == 0)
         {
-            errors.Add("projectDefinition is required.");
+            errors.Add("projectCode is required.");
         }
-        else if (project.Length > ProjectDefinitionMaxLength)
+        else if (project.Length > ProjectCodeMaxLength)
         {
-            errors.Add($"projectDefinition '{project}' is longer than {ProjectDefinitionMaxLength} characters.");
+            errors.Add($"projectCode '{project}' is longer than {ProjectCodeMaxLength} characters.");
         }
 
         if (status.Length == 0)

@@ -22,7 +22,7 @@ public sealed class SetProjectStatusResponse
 }
 
 public sealed record SetProjectStatusResult(
-    string? ProjectDefinition,
+    string? ProjectCode,
     string? UserStatus,
     bool Success,
     int? SapHttpStatus,
