@@ -47,7 +47,7 @@ builder.Services.AddProductHierarchy();
 builder.Services.AddBudgetCostPlan();
 builder.Services.AddSetProjectStatus();
 builder.Services.AddGetProjectStatus();
-builder.Services.AddPrStatus(builder.Configuration);
+builder.Services.AddGetPrPoStatus(builder.Configuration);
 builder.Services.AddNetworkActivities(builder.Configuration);
 
 builder.Services.AddIntegrationHealthChecks();

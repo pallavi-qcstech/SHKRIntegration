@@ -8,14 +8,14 @@ using SHKRIntegration.Options;
 
 namespace SHKRIntegration.Services;
 
-public sealed class ShkrPrStatusService(
+public sealed class ShkrGetPrPoStatusService(
     IHttpClientFactory httpClientFactory,
     IOptions<ShkrSapApiOptions> shkrSapOptions,
-    IOptionsMonitor<ShkrPrStatusOptions> prStatusOptions,
+    IOptionsMonitor<ShkrGetPrPoStatusOptions> prStatusOptions,
     IOptions<ShkrDatabaseOptions> databaseOptions,
-    ILogger<ShkrPrStatusService> logger)
+    ILogger<ShkrGetPrPoStatusService> logger)
 {
-    public const string ShkrSapClientName = "ShkrSapPrStatus";
+    public const string ShkrSapClientName = "ShkrSapGetPrPoStatus";
 
     private const string QueueRowSql = """
         SELECT tran_id, tran_type

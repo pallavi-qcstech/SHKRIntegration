@@ -5,7 +5,7 @@ namespace SHKRIntegration.Controllers;
 
 [ApiController]
 [Route("SHKRIntegration/api/Inbound")]
-public sealed class PrStatusController(ShkrPrStatusService statusService) : ControllerBase
+public sealed class GetPrPoStatusController(ShkrGetPrPoStatusService statusService) : ControllerBase
 {
     [HttpPost("prstatus")]
     public async Task<IActionResult> PrStatus([FromQuery] long recordId, CancellationToken cancellationToken)

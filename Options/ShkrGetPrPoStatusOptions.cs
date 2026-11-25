@@ -1,6 +1,6 @@
 namespace SHKRIntegration.Options;
 
-public sealed class ShkrPrStatusOptions
+public sealed class ShkrGetPrPoStatusOptions
 {
     public const string SectionName = "PrStatus";
 
