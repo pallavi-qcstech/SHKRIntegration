@@ -7,10 +7,11 @@ public static class GetPrPoStatusServiceExtensions
 {
     public static IServiceCollection AddGetPrPoStatus(this IServiceCollection services, IConfiguration configuration)
     {
-        services.AddShkrSapHttpClientNoRetry(ShkrGetPrPoStatusService.ShkrSapClientName);
+        services.AddShkrSapHttpClientNoRetry(ShkrGetPrPoStatusServiceBase.ShkrSapClientName);
 
         services.Configure<ShkrGetPrPoStatusOptions>(configuration.GetSection(ShkrGetPrPoStatusOptions.SectionName));
-        services.AddSingleton<ShkrGetPrPoStatusService>();
+        services.AddSingleton<ShkrGetPrStatusService>();
+        services.AddSingleton<ShkrGetPoStatusService>();
 
         return services;
     }

@@ -2,7 +2,7 @@ using System.Text.Json.Serialization;
 
 namespace SHKRIntegration.Models;
 
-public sealed class PrStatusEntry
+public sealed class GetPrStatusEntry
 {
     [JsonPropertyName("purchase_requsition")]
     public string? PurchaseRequisition { get; set; }
@@ -14,7 +14,7 @@ public sealed class PrStatusEntry
     public string? Status { get; set; }
 }
 
-public sealed class PoStatusEntry
+public sealed class GetPoStatusEntry
 {
     [JsonPropertyName("purchase_order")]
     public string? PurchaseOrder { get; set; }
