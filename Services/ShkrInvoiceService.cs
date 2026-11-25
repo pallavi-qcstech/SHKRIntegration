@@ -23,17 +23,14 @@ public sealed class ShkrInvoiceService(
     private readonly ShkrSapApiOptions _options = shkrSapOptions.Value;
     private readonly ShkrDatabaseOptions _databaseOptions = databaseOptions.Value;
 
-    public static DateTime EndOfDay(DateTime date) =>
-        date.Date.AddDays(1).AddSeconds(-1);
-
-    public static string BuildLastUpdateFilter(DateTime date) =>
-        $"LastUpdateDateTime le datetime'{EndOfDay(date):yyyy-MM-dd'T'HH:mm:ss}'";
+    public static string BuildLastUpdateFilter(DateTime lastUpdateFrom) =>
+        $"LastUpdateDateTime ge datetime'{lastUpdateFrom.Date:yyyy-MM-dd'T'HH:mm:ss}'";
 
     public async Task<List<InvoiceHeader>> GetChangedInvoicesAsync(
-        DateTime lastUpdateTo, CancellationToken cancellationToken = default)
+        DateTime lastUpdateFrom, CancellationToken cancellationToken = default)
     {
         var client = httpClientFactory.CreateClient(ShkrSapClientName);
-        var filter = BuildLastUpdateFilter(lastUpdateTo);
+        var filter = BuildLastUpdateFilter(lastUpdateFrom);
 
         var all = new List<InvoiceHeader>();
         var skip = 0;
@@ -75,19 +72,17 @@ public sealed class ShkrInvoiceService(
         return all;
     }
 
-    public async Task<InvoiceSyncResult> FetchSapDataToStagingTableAsync(DateTime? lastUpdateDate, CancellationToken cancellationToken = default)
+    public async Task<SyncResult> FetchSapDataToStagingTableAsync(DateTime lastUpdateFrom, CancellationToken cancellationToken = default)
     {
-        var effectiveTo = (lastUpdateDate ?? DateTime.Today).Date;
+        var effectiveFrom = lastUpdateFrom.Date;
 
-        var invoices = await GetChangedInvoicesAsync(effectiveTo, cancellationToken);
+        var invoices = await GetChangedInvoicesAsync(effectiveFrom, cancellationToken);
 
         logger.LogInformation(
-            "Invoice sync for invoices created or changed up to {To:yyyy-MM-dd}, SAP filter {Filter}: {Count} invoice(s) fetched, staging.",
-            effectiveTo, BuildLastUpdateFilter(effectiveTo), invoices.Count);
+            "Invoice sync for invoices created or changed since {From:yyyy-MM-dd}, SAP filter {Filter}: {Count} invoice(s) fetched, staging.",
+            effectiveFrom, BuildLastUpdateFilter(effectiveFrom), invoices.Count);
 
-        var inserted = 0;
-        var updated = 0;
-        var unchanged = 0;
+        var staged = 0;
         var errors = new List<string>();
 
         var orderedInvoices = invoices
@@ -99,18 +94,8 @@ public sealed class ShkrInvoiceService(
         {
             try
             {
-                switch (await SaveInvoice(invoice, cancellationToken))
-                {
-                    case InvoiceStageOutcome.Inserted:
-                        inserted++;
-                        break;
-                    case InvoiceStageOutcome.Updated:
-                        updated++;
-                        break;
-                    default:
-                        unchanged++;
-                        break;
-                }
+                await SaveInvoice(invoice, cancellationToken);
+                staged++;
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
@@ -121,13 +106,13 @@ public sealed class ShkrInvoiceService(
         }
 
         logger.LogInformation(
-            "Invoice sync up to {To:yyyy-MM-dd} finished: {Fetched} fetched, {Inserted} inserted, {Updated} updated, {Unchanged} unchanged, {Failed} failed.",
-            effectiveTo, invoices.Count, inserted, updated, unchanged, errors.Count);
+            "Invoice sync since {From:yyyy-MM-dd} finished: {Fetched} fetched, {Staged} staged, {Failed} failed.",
+            effectiveFrom, invoices.Count, staged, errors.Count);
 
-        return new InvoiceSyncResult(invoices.Count, inserted, updated, unchanged, errors.Count, errors);
+        return new SyncResult(invoices.Count, staged, errors.Count, errors);
     }
 
-    public async Task<InvoiceStageOutcome> SaveInvoice(InvoiceHeader invoice, CancellationToken cancellationToken = default)
+    public async Task SaveInvoice(InvoiceHeader invoice, CancellationToken cancellationToken = default)
     {
         var now = DateTime.Now;
 
@@ -137,58 +122,16 @@ public sealed class ShkrInvoiceService(
 
         try
         {
-            var existing = await FindStagedHeader(connection, transaction, invoice.InvoiceNumber, cancellationToken);
-
-            InvoiceStageOutcome outcome;
-
-            if (existing is null)
-            {
-                var hdrRecordId = await InsertHeader(connection, transaction, invoice, now, cancellationToken);
-                await InsertLines(connection, transaction, invoice.InvoiceNumber, hdrRecordId, invoice.Lines.Results, now, cancellationToken);
-                outcome = InvoiceStageOutcome.Inserted;
-            }
-            else if (SameLastUpdate(existing.Value.LastUpdateDateTime, invoice.LastUpdateDateTime))
-            {
-                outcome = InvoiceStageOutcome.Unchanged;
-            }
-            else
-            {
-                await UpdateHeader(connection, transaction, existing.Value.RecordId, invoice, now, cancellationToken);
-                await UpsertLines(connection, transaction, invoice.InvoiceNumber, existing.Value.RecordId, invoice.Lines.Results, now, cancellationToken);
-                outcome = InvoiceStageOutcome.Updated;
-            }
+            var hdrRecordId = await InsertHeader(connection, transaction, invoice, now, cancellationToken);
+            await InsertLines(connection, transaction, invoice.InvoiceNumber, hdrRecordId, invoice.Lines.Results, now, cancellationToken);
 
             await transaction.CommitAsync(cancellationToken);
-            return outcome;
         }
         catch
         {
             await transaction.RollbackAsync(cancellationToken);
             throw;
         }
-    }
-
-    public static bool SameLastUpdate(DateTime? staged, DateTime? fromSap) =>
-        staged.HasValue == fromSap.HasValue && (!staged.HasValue || staged.Value.Ticks == fromSap!.Value.Ticks);
-
-    private static async Task<(long RecordId, DateTime? LastUpdateDateTime)?> FindStagedHeader(
-        SqlConnection connection, SqlTransaction transaction, string invoiceNumber, CancellationToken cancellationToken)
-    {
-        await using var command = new SqlCommand($"""
-            SELECT TOP (1) record_id, LastUpdateDateTime
-            FROM {HeaderTable} WITH (UPDLOCK, HOLDLOCK)
-            WHERE InvoiceNumber = @InvoiceNumber
-            ORDER BY record_id DESC
-            """, connection, transaction);
-        command.Parameters.AddWithValue("@InvoiceNumber", invoiceNumber);
-
-        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
-        if (!await reader.ReadAsync(cancellationToken))
-        {
-            return null;
-        }
-
-        return (reader.GetInt64(0), reader.IsDBNull(1) ? null : reader.GetDateTime(1));
     }
 
     private static async Task<long> InsertHeader(
@@ -209,23 +152,6 @@ public sealed class ShkrInvoiceService(
         return (long)(await command.ExecuteScalarAsync(cancellationToken))!;
     }
 
-    private static async Task UpdateHeader(
-        SqlConnection connection, SqlTransaction transaction, long recordId, InvoiceHeader h, DateTime now,
-        CancellationToken cancellationToken)
-    {
-        (string Column, object? Value)[] values =
-        [
-            .. HeaderValues(h),
-            ("operation_flag", "U"),
-            ("process_status", "N"),
-            ("error_msg", null),
-            ("last_update_date", now.Date)
-        ];
-
-        await using var command = BuildUpdate(connection, transaction, HeaderTable, values, "record_id = @key0", [recordId]);
-        await command.ExecuteNonQueryAsync(cancellationToken);
-    }
-
     private static async Task InsertLines(
         SqlConnection connection, SqlTransaction transaction, string invoiceNumber, long hdrRecordId,
         IReadOnlyList<InvoiceLine> lines, DateTime now, CancellationToken cancellationToken)
@@ -233,32 +159,6 @@ public sealed class ShkrInvoiceService(
         foreach (var l in OrderLines(lines))
         {
             await InsertLine(connection, transaction, invoiceNumber, hdrRecordId, l, now, cancellationToken);
-        }
-    }
-
-    private static async Task UpsertLines(
-        SqlConnection connection, SqlTransaction transaction, string invoiceNumber, long hdrRecordId,
-        IReadOnlyList<InvoiceLine> lines, DateTime now, CancellationToken cancellationToken)
-    {
-        foreach (var l in OrderLines(lines))
-        {
-            (string Column, object? Value)[] values =
-            [
-                .. LineValues(invoiceNumber, l),
-                ("operation_flag", "U"),
-                ("process_status", "N"),
-                ("error_msg", null),
-                ("last_update_date", now.Date)
-            ];
-
-            await using var command = BuildUpdate(
-                connection, transaction, LineTable, values,
-                "hdr_record_id = @key0 AND LineNumber = @key1", [hdrRecordId, l.LineNumber]);
-
-            if (await command.ExecuteNonQueryAsync(cancellationToken) == 0)
-            {
-                await InsertLine(connection, transaction, invoiceNumber, hdrRecordId, l, now, cancellationToken);
-            }
         }
     }
 
@@ -394,23 +294,6 @@ public sealed class ShkrInvoiceService(
 
         var command = new SqlCommand(sql, connection, transaction);
         AddValues(command, values);
-
-        return command;
-    }
-
-    private static SqlCommand BuildUpdate(
-        SqlConnection connection, SqlTransaction transaction, string table,
-        (string Column, object? Value)[] values, string whereClause, object[] keys)
-    {
-        var assignments = string.Join(", ", values.Select((v, i) => $"[{v.Column}] = @p{i}"));
-        var sql = $"UPDATE {table} SET {assignments} WHERE {whereClause}";
-
-        var command = new SqlCommand(sql, connection, transaction);
-        AddValues(command, values);
-        for (var i = 0; i < keys.Length; i++)
-        {
-            command.Parameters.AddWithValue($"@key{i}", keys[i]);
-        }
 
         return command;
     }

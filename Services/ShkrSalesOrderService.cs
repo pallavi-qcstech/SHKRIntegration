@@ -20,11 +20,14 @@ public sealed class ShkrSalesOrderService(
     private readonly ShkrSapApiOptions _options = shkrSapOptions.Value;
     private readonly ShkrDatabaseOptions _databaseOptions = databaseOptions.Value;
 
+    public static string BuildLastUpdateFilter(DateTime lastUpdateFrom) =>
+        $"LastUpdateDateTime ge datetime'{lastUpdateFrom.Date:yyyy-MM-dd'T'HH:mm:ss}'";
+
     public async Task<List<SalesOrderHeader>> GetChangedSalesOrdersAsync(
-        DateTime lastUpdateDate, CancellationToken cancellationToken = default)
+        DateTime lastUpdateFrom, CancellationToken cancellationToken = default)
     {
         var client = httpClientFactory.CreateClient(ShkrSapClientName);
-        var filter = $"LastUpdateDateTime eq datetime'{lastUpdateDate:yyyy-MM-dd}T00:00:00'";
+        var filter = BuildLastUpdateFilter(lastUpdateFrom);
 
         var all = new List<SalesOrderHeader>();
         var skip = 0;
@@ -66,15 +69,15 @@ public sealed class ShkrSalesOrderService(
         return all;
     }
 
-    public async Task<SyncResult> FetchSapDataToStagingTableAsync(DateTime? lastUpdateDate, CancellationToken cancellationToken = default)
+    public async Task<SyncResult> FetchSapDataToStagingTableAsync(DateTime lastUpdateFrom, CancellationToken cancellationToken = default)
     {
-        var effectiveDate = (lastUpdateDate ?? DateTime.Today).Date;
+        var effectiveDate = lastUpdateFrom.Date;
 
         var orders = await GetChangedSalesOrdersAsync(effectiveDate, cancellationToken);
 
         logger.LogInformation(
-            "Sales order sync for LastUpdateDateTime={Date:yyyy-MM-dd}: {Count} order(s) fetched, staging.",
-            effectiveDate, orders.Count);
+            "Sales order sync for records created or changed since {Date:yyyy-MM-dd}, SAP filter {Filter}: {Count} order(s) fetched, staging.",
+            effectiveDate, BuildLastUpdateFilter(effectiveDate), orders.Count);
 
         var staged = 0;
         var errors = new List<string>();

@@ -109,13 +109,3 @@ public sealed class InvoiceLine
     [JsonPropertyName("ProjectCode")] public string ProjectCode { get; set; } = string.Empty;
     [JsonPropertyName("ProjectDescription")] public string ProjectDescription { get; set; } = string.Empty;
 }
-
-public enum InvoiceStageOutcome
-{
-    Inserted,
-    Updated,
-    Unchanged
-}
-
-public sealed record InvoiceSyncResult(
-    int Fetched, int Inserted, int Updated, int Unchanged, int Failed, IReadOnlyList<string> Errors);

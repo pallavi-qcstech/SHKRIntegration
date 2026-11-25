@@ -1,3 +1,4 @@
+using System.Globalization;
 using Microsoft.AspNetCore.Mvc;
 using SHKRIntegration.Services;
 
@@ -9,9 +10,14 @@ public sealed class SalesOrderController(ShkrSalesOrderService salesOrderService
 {
     [HttpPost("salesorder")]
     public async Task<IActionResult> Sync(
-        [FromQuery] DateTime? lastUpdateDate, CancellationToken cancellationToken)
+        [FromQuery] string? lastUpdateDate, CancellationToken cancellationToken)
     {
-        var result = await salesOrderService.FetchSapDataToStagingTableAsync(lastUpdateDate, cancellationToken);
+        if (!DateTime.TryParseExact(lastUpdateDate, "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out var lastUpdateFrom))
+        {
+            return BadRequest("lastUpdateDate is required (yyyy-MM-dd).");
+        }
+
+        var result = await salesOrderService.FetchSapDataToStagingTableAsync(lastUpdateFrom, cancellationToken);
         return Ok(result);
     }
 }
