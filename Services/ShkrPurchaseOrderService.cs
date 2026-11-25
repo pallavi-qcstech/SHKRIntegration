@@ -63,10 +63,6 @@ public sealed class ShkrPurchaseOrderService(
         }
     }
 
-    // 24/11/26 service PO (every PO is a service PO): per Commitment line one PO item (ItemCat 9,
-    // quantity 1, no NetPrice/PriceUnit) + one POSRVSet service line (quantity = line quantity,
-    // GrPrice = unit cost) + one POACCOUNTSet row (Network + Activity). No POSCHEDSet.
-    // Costcenter is NOT sent (in the sample payloads, no PMWeb source agreed) - [TBC].
     public static CreatePurchaseOrderRequest BuildRequest(
         PurchaseOrderHeader header, List<PurchaseOrderLine> lines)
     {
