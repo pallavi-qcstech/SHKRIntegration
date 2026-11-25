@@ -20,13 +20,13 @@ public sealed class ShkrWBSService(
 
     public async Task<List<WbsHierarchy>> GetWbsHierarchyAsync(
         // string projectCode,
-        DateTime createdon, CancellationToken cancellationToken = default)
+        DateTime lastUpdateFrom, CancellationToken cancellationToken = default)
     {
         var client = httpClientFactory.CreateClient(ShkrProjectService.ShkrSapClientName);
         // var requestUri =
         //     $"/sap/opu/odata/SAP/ZPS_PROJ_SRV/hierarchySet?sap-client={_options.ShkrSapClient}&$filter=PROJECTCODE eq '{projectCode}'";
         var requestUri =
-            $"/sap/opu/odata/SAP/ZPS_PROJ_SRV/hierarchySet?sap-client={_options.ShkrSapClient}&$filter=CREATEDON eq '{createdon.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture)}'";
+            $"/sap/opu/odata/SAP/ZPS_PROJ_SRV/hierarchySet?sap-client={_options.ShkrSapClient}&$filter=CREATEDON ge '{lastUpdateFrom.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture)}'";
 
         using var response = await client.GetAsync(requestUri, cancellationToken);
 
@@ -51,8 +51,12 @@ public sealed class ShkrWBSService(
         await using var connection = new SqlConnection(_databaseOptions.ConnectionString);
         await connection.OpenAsync(cancellationToken);
 
-        const string existsSql =
-            "SELECT COUNT(1) FROM dbo.xx_sap_costcode_stg_tbl_ib WHERE project_code = @ProjectCode AND sap_wbs = @SapWbs AND ISNULL(parent_wbs, '') = ISNULL(@ParentWbs, '')";
+        const string latestSql = """
+            SELECT TOP (1) record_id, process_status, process_status_wbs
+            FROM dbo.xx_sap_costcode_stg_tbl_ib
+            WHERE project_code = @ProjectCode AND sap_wbs = @SapWbs AND ISNULL(parent_wbs, '') = ISNULL(@ParentWbs, '')
+            ORDER BY record_id DESC
+            """;
 
         const string updateSql = """
             UPDATE dbo.xx_sap_costcode_stg_tbl_ib
@@ -60,9 +64,12 @@ public sealed class ShkrWBSService(
                 wbs_type = @WbsType, sap_stripped_wbs = @SapStrippedWbs, plant = @Plant,
                 con_key = @ConKey, func_area = @FuncArea, sap_createdon = @SapCreatedOn,
                 operation_flag = @OperationFlag, process_status = @ProcessStatus, error_msg = NULL,
-                process_status_wbs = @ProcessStatusWbs, error_msg_wbs = NULL, pmweb_wbs_id = NULL, pmweb_wbs_config_id = NULL,
+                process_status_wbs = CASE WHEN process_status_wbs = 'S' THEN process_status_wbs ELSE @ProcessStatusWbs END,
+                error_msg_wbs = CASE WHEN process_status_wbs = 'S' THEN error_msg_wbs ELSE NULL END,
+                pmweb_wbs_id = CASE WHEN process_status_wbs = 'S' THEN pmweb_wbs_id ELSE NULL END,
+                pmweb_wbs_config_id = CASE WHEN process_status_wbs = 'S' THEN pmweb_wbs_config_id ELSE NULL END,
                 creation_date = @CreationDate, last_update_date = @LastUpdateDate
-            WHERE project_code = @ProjectCode AND sap_wbs = @SapWbs AND ISNULL(parent_wbs, '') = ISNULL(@ParentWbs, '')
+            WHERE record_id = @RecordId
             """;
 
         const string insertSql = """
@@ -76,13 +83,30 @@ public sealed class ShkrWBSService(
                  @ProcessStatus, @ProcessStatusWbs, @CreationDate, @LastUpdateDate)
             """;
 
-        await using var existsCmd = new SqlCommand(existsSql, connection);
-        existsCmd.Parameters.AddWithValue("@ProjectCode", wbs.ProjectCode);
-        existsCmd.Parameters.AddWithValue("@SapWbs", wbs.Wbs);
-        existsCmd.Parameters.AddWithValue("@ParentWbs", string.IsNullOrEmpty(wbs.UpWbs) ? DBNull.Value : wbs.UpWbs);
-        var exists = (int)(await existsCmd.ExecuteScalarAsync(cancellationToken))! > 0;
+        long? waitingRecordId = null;
+        await using (var latestCmd = new SqlCommand(latestSql, connection))
+        {
+            latestCmd.Parameters.AddWithValue("@ProjectCode", wbs.ProjectCode);
+            latestCmd.Parameters.AddWithValue("@SapWbs", wbs.Wbs);
+            latestCmd.Parameters.AddWithValue("@ParentWbs", string.IsNullOrEmpty(wbs.UpWbs) ? DBNull.Value : wbs.UpWbs);
+            await using var reader = await latestCmd.ExecuteReaderAsync(cancellationToken);
+            if (await reader.ReadAsync(cancellationToken))
+            {
+                var status = reader.IsDBNull(1) ? null : reader.GetString(1).Trim();
+                var statusWbs = reader.IsDBNull(2) ? null : reader.GetString(2).Trim();
+                if (status == "N" || statusWbs == "N")
+                {
+                    waitingRecordId = Convert.ToInt64(reader.GetValue(0), CultureInfo.InvariantCulture);
+                }
+            }
+        }
 
-        await using var command = new SqlCommand(exists ? updateSql : insertSql, connection);
+        await using var command = new SqlCommand(waitingRecordId is null ? insertSql : updateSql, connection);
+        if (waitingRecordId is not null)
+        {
+            command.Parameters.AddWithValue("@RecordId", waitingRecordId.Value);
+        }
+
         command.Parameters.AddWithValue("@ProjectCode", wbs.ProjectCode);
         command.Parameters.AddWithValue("@ProjectName", wbs.ProjectName);
         command.Parameters.AddWithValue("@SapWbs", wbs.Wbs);
@@ -143,13 +167,13 @@ public sealed class ShkrWBSService(
 
     public async Task<SyncResult> FetchSapDataToStagingTableAsync(
         // string projectCode,
-        DateTime createdon, CancellationToken cancellationToken = default)
+        DateTime lastUpdateFrom, CancellationToken cancellationToken = default)
     {
-        var wbsRows = await GetWbsHierarchyAsync(createdon, cancellationToken);
+        var wbsRows = await GetWbsHierarchyAsync(lastUpdateFrom, cancellationToken);
 
         logger.LogInformation(
-            "Manual WBS sync for CREATEDON={Createdon:yyyy-MM-dd}: {Count} WBS row(s) fetched, staging and promoting.",
-            createdon, wbsRows.Count);
+            "WBS sync for projects created on or after {LastUpdateDate:yyyy-MM-dd} (SAP filter CREATEDON ge): {Count} WBS row(s) fetched, staging and promoting.",
+            lastUpdateFrom, wbsRows.Count);
 
         var staged = 0;
         var errors = new List<string>();
@@ -158,7 +182,7 @@ public sealed class ShkrWBSService(
         {
             try
             {
-                await SaveWbs(wbs, createdon, cancellationToken);
+                await SaveWbs(wbs, lastUpdateFrom, cancellationToken);
                 staged++;
             }
             catch (Exception ex) when (ex is not OperationCanceledException)

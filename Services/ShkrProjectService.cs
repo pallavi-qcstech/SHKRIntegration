@@ -22,14 +22,14 @@ public sealed class ShkrProjectService(
 
     public async Task<List<Proj>> GetAllProjectsAsync(
         // string? projectCode,
-        DateTime createdon, CancellationToken cancellationToken = default)
+        DateTime lastUpdateFrom, CancellationToken cancellationToken = default)
     {
         var client = httpClientFactory.CreateClient(ShkrSapClientName);
         var requestUri = $"/sap/opu/odata/SAP/ZPS_PROJ_SRV/PROJSet?sap-client={_options.ShkrSapClient}";
 
         var filters = new List<string>
         {
-            $"Createdon eq '{createdon.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture)}'"
+            $"Createdon ge '{lastUpdateFrom.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture)}'"
         };
         // if (!string.IsNullOrWhiteSpace(projectCode))
         // {
@@ -70,13 +70,13 @@ public sealed class ShkrProjectService(
 
     public async Task<SyncResult> FetchSapDataToStagingTableAsync(
         // string? projectCode,
-        DateTime createdon, CancellationToken cancellationToken = default)
+        DateTime lastUpdateFrom, CancellationToken cancellationToken = default)
     {
-        var projects = await GetAllProjectsAsync(createdon, cancellationToken);
+        var projects = await GetAllProjectsAsync(lastUpdateFrom, cancellationToken);
 
         logger.LogInformation(
-            "Manual project sync for Createdon={Createdon:yyyy-MM-dd}: {Count} project(s) fetched, staging and promoting.",
-            createdon, projects.Count);
+            "Project sync for projects created on or after {LastUpdateDate:yyyy-MM-dd} (SAP filter Createdon ge): {Count} project(s) fetched, staging and promoting.",
+            lastUpdateFrom, projects.Count);
 
         var staged = 0;
         var errors = new List<string>();
@@ -85,7 +85,7 @@ public sealed class ShkrProjectService(
         {
             try
             {
-                await SaveProject(project, createdon, cancellationToken);
+                await SaveProject(project, lastUpdateFrom, cancellationToken);
                 staged++;
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
@@ -105,7 +105,12 @@ public sealed class ShkrProjectService(
         await using var connection = new SqlConnection(_databaseOptions.ConnectionString);
         await connection.OpenAsync(cancellationToken);
 
-        const string existsSql = "SELECT COUNT(1) FROM dbo.xx_project_stg_tbl_ib WHERE project_code = @ProjectCode";
+        const string latestSql = """
+            SELECT TOP (1) record_id, process_status
+            FROM dbo.xx_project_stg_tbl_ib
+            WHERE project_code = @ProjectCode
+            ORDER BY record_id DESC
+            """;
 
         const string updateSql = """
             UPDATE dbo.xx_project_stg_tbl_ib
@@ -113,7 +118,7 @@ public sealed class ShkrProjectService(
                 company_code = @CompanyCode, pr_doc_type = @PrDocType, po_doc_type = @PoDocType,
                 operation_flag = @OperationFlag, process_status = @ProcessStatus,
                 error_msg = NULL, creation_date = @CreationDate, last_update_date = @LastUpdateDate
-            WHERE project_code = @ProjectCode
+            WHERE record_id = @RecordId
             """;
 
         const string insertSql = """
@@ -125,11 +130,27 @@ public sealed class ShkrProjectService(
                  @OperationFlag, @ProcessStatus, @CreationDate, @LastUpdateDate)
             """;
 
-        await using var existsCmd = new SqlCommand(existsSql, connection);
-        existsCmd.Parameters.AddWithValue("@ProjectCode", project.ProjectCode);
-        var exists = (int)(await existsCmd.ExecuteScalarAsync(cancellationToken))! > 0;
+        long? waitingRecordId = null;
+        await using (var latestCmd = new SqlCommand(latestSql, connection))
+        {
+            latestCmd.Parameters.AddWithValue("@ProjectCode", project.ProjectCode);
+            await using var reader = await latestCmd.ExecuteReaderAsync(cancellationToken);
+            if (await reader.ReadAsync(cancellationToken))
+            {
+                var status = reader.IsDBNull(1) ? null : reader.GetString(1).Trim();
+                if (status is "N" or "E")
+                {
+                    waitingRecordId = Convert.ToInt64(reader.GetValue(0), CultureInfo.InvariantCulture);
+                }
+            }
+        }
 
-        await using var command = new SqlCommand(exists ? updateSql : insertSql, connection);
+        await using var command = new SqlCommand(waitingRecordId is null ? insertSql : updateSql, connection);
+        if (waitingRecordId is not null)
+        {
+            command.Parameters.AddWithValue("@RecordId", waitingRecordId.Value);
+        }
+
         command.Parameters.AddWithValue("@ProjectCode", project.ProjectCode);
         command.Parameters.AddWithValue("@ProjectName", project.ProjectName);
         command.Parameters.AddWithValue("@ProjectProfile", project.ProjectProfile);
