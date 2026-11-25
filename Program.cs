@@ -45,7 +45,8 @@ builder.Services.AddReservations();
 builder.Services.AddMaterials();
 builder.Services.AddProductHierarchy();
 builder.Services.AddBudgetCostPlan();
-builder.Services.AddProjectStatus();
+builder.Services.AddSetProjectStatus();
+builder.Services.AddGetProjectStatus();
 builder.Services.AddPrStatus(builder.Configuration);
 builder.Services.AddNetworkActivities(builder.Configuration);
 

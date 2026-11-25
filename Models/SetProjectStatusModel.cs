@@ -2,13 +2,13 @@ using System.Text.Json.Serialization;
 
 namespace SHKRIntegration.Models;
 
-public sealed class ProjectStatusSetRequest
+public sealed class SetProjectStatusRequest
 {
     [JsonPropertyName("ProjectDefinition")] public string ProjectDefinition { get; set; } = string.Empty;
     [JsonPropertyName("SetUserStatus")] public string SetUserStatus { get; set; } = string.Empty;
 }
 
-public sealed class ProjectStatusSetResponse
+public sealed class SetProjectStatusResponse
 {
     [JsonPropertyName("ProjectDefinition")] public string? ProjectDefinition { get; set; }
     [JsonPropertyName("SetUserStatus")] public string? SetUserStatus { get; set; }
@@ -21,7 +21,7 @@ public sealed class ProjectStatusSetResponse
     [JsonPropertyName("ActiveUserStatuses")] public string? ActiveUserStatuses { get; set; }
 }
 
-public sealed record ProjectStatusSetResult(
+public sealed record SetProjectStatusResult(
     string? ProjectDefinition,
     string? UserStatus,
     bool Success,

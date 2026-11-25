@@ -8,12 +8,12 @@ using SHKRIntegration.Options;
 
 namespace SHKRIntegration.Services;
 
-public sealed class ShkrProjectStatusService(
+public sealed class ShkrSetProjectStatusService(
     IHttpClientFactory httpClientFactory,
     IOptions<ShkrSapApiOptions> shkrSapOptions,
-    ILogger<ShkrProjectStatusService> logger)
+    ILogger<ShkrSetProjectStatusService> logger)
 {
-    public const string ShkrSapClientName = "ShkrSapProjectStatus";
+    public const string ShkrSapClientName = "ShkrSapSetProjectStatus";
 
     public const string ServicePath = "/sap/opu/odata/sap/ZPS_PROJ_STATUS_SRV/";
     public const string EntitySet = "ProjectStatusSet";
@@ -29,7 +29,7 @@ public sealed class ShkrProjectStatusService(
 
     private readonly ShkrSapApiOptions _options = shkrSapOptions.Value;
 
-    public async Task<ProjectStatusSetResult> SetUserStatusAsync(
+    public async Task<SetProjectStatusResult> SetUserStatusAsync(
         string? projectDefinition, string? userStatus, CancellationToken cancellationToken = default)
     {
         var project = projectDefinition?.Trim() ?? string.Empty;
@@ -66,7 +66,7 @@ public sealed class ShkrProjectStatusService(
             }
 
             var requestJson = JsonSerializer.Serialize(
-                new ProjectStatusSetRequest { ProjectDefinition = project, SetUserStatus = status }, RequestSerializerOptions);
+                new SetProjectStatusRequest { ProjectDefinition = project, SetUserStatus = status }, RequestSerializerOptions);
 
             using var request = new HttpRequestMessage(HttpMethod.Post, $"{ServicePath}{EntitySet}?sap-client={_options.ShkrSapClient}");
             request.Headers.TryAddWithoutValidation(CsrfHeaderName, token);
@@ -121,7 +121,7 @@ public sealed class ShkrProjectStatusService(
         return errors.Count == 0 ? null : string.Join(" ", errors) + " SAP was not called.";
     }
 
-    public static ProjectStatusSetResult Evaluate(string project, string status, int httpStatus, string body)
+    public static SetProjectStatusResult Evaluate(string project, string status, int httpStatus, string body)
     {
         if (httpStatus == (int)HttpStatusCode.Unauthorized)
         {
@@ -132,14 +132,14 @@ public sealed class ShkrProjectStatusService(
         {
             var sapError = ReadSapError(body, httpStatus);
             var reply = httpStatus is >= 400 and < 500 ? StatusCodes.Status422UnprocessableEntity : StatusCodes.Status502BadGateway;
-            return new ProjectStatusSetResult(project, status, false, httpStatus, null, sapError, null,
+            return new SetProjectStatusResult(project, status, false, httpStatus, null, sapError, null,
                 $"SAP refused the status change: {sapError}", reply);
         }
 
-        ProjectStatusSetResponse? answer = null;
+        SetProjectStatusResponse? answer = null;
         try
         {
-            answer = JsonSerializer.Deserialize<ODataEnvelope<ProjectStatusSetResponse>>(body)?.D;
+            answer = JsonSerializer.Deserialize<ODataEnvelope<SetProjectStatusResponse>>(body)?.D;
         }
         catch (JsonException)
         {
@@ -147,26 +147,26 @@ public sealed class ShkrProjectStatusService(
 
         if (answer is null)
         {
-            return new ProjectStatusSetResult(project, status, false, httpStatus, null, null, null,
+            return new SetProjectStatusResult(project, status, false, httpStatus, null, null, null,
                 $"SAP answered {httpStatus} with a body that is not the ProjectStatusSet OData reply; check the project in SAP.",
                 StatusCodes.Status502BadGateway);
         }
 
         if (answer.Success != true)
         {
-            return new ProjectStatusSetResult(project, status, false, httpStatus, answer.ActiveUserStatuses, answer.Message,
+            return new SetProjectStatusResult(project, status, false, httpStatus, answer.ActiveUserStatuses, answer.Message,
                 answer.ResultLog, $"SAP answered {httpStatus} but Success is not true.", StatusCodes.Status502BadGateway);
         }
 
         if (!CarriesStatus(answer.ActiveUserStatuses, status))
         {
-            return new ProjectStatusSetResult(project, status, false, httpStatus, answer.ActiveUserStatuses, answer.Message,
+            return new SetProjectStatusResult(project, status, false, httpStatus, answer.ActiveUserStatuses, answer.Message,
                 answer.ResultLog,
                 $"SAP answered {httpStatus} but the project does not carry user status {status.ToUpperInvariant()} (ActiveUserStatuses: '{answer.ActiveUserStatuses}').",
                 StatusCodes.Status502BadGateway);
         }
 
-        return new ProjectStatusSetResult(project, status, true, httpStatus, answer.ActiveUserStatuses, answer.Message,
+        return new SetProjectStatusResult(project, status, true, httpStatus, answer.ActiveUserStatuses, answer.Message,
             answer.ResultLog, null, StatusCodes.Status200OK);
     }
 
@@ -235,6 +235,6 @@ public sealed class ShkrProjectStatusService(
         }
     }
 
-    private static ProjectStatusSetResult Fail(string project, string status, int replyStatusCode, string error, int? sapHttpStatus = null) =>
+    private static SetProjectStatusResult Fail(string project, string status, int replyStatusCode, string error, int? sapHttpStatus = null) =>
         new(project, status, false, sapHttpStatus, null, null, null, error, replyStatusCode);
 }

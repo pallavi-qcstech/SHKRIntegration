@@ -5,9 +5,9 @@ namespace SHKRIntegration.Controllers;
 
 [ApiController]
 [Route("SHKRIntegration/api/Outbound")]
-public sealed class ProjectStatusController(ShkrProjectStatusService projectStatusService) : ControllerBase
+public sealed class SetProjectStatusController(ShkrSetProjectStatusService projectStatusService) : ControllerBase
 {
-    [HttpPost("projectstatus")]
+    [HttpPost("setProjectStatus")]
     public async Task<IActionResult> SetUserStatus(
         [FromQuery] string? projectDefinition, [FromQuery] string? userStatus, CancellationToken cancellationToken)
     {
