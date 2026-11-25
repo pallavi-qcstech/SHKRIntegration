@@ -20,5 +20,7 @@ public sealed class BudgetLine
     public string? SapWbsElement { get; set; }
     public int? PriceUnit { get; set; }
     public decimal? Price { get; set; }
+    public decimal? OperationQty { get; set; }
+    public string? Currency { get; set; }
     public string? ProcessStatus { get; set; }
 }

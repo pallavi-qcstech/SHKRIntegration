@@ -24,4 +24,6 @@ public sealed class BudgetCostNetworkActivityItem
     [JsonPropertyName("WbsElement")] public string WbsElement { get; set; } = string.Empty;
     [JsonPropertyName("Price")] public string Price { get; set; } = string.Empty;
     [JsonPropertyName("PriceUnit")] public string PriceUnit { get; set; } = string.Empty;
+    [JsonPropertyName("OperationQty")] public string OperationQty { get; set; } = string.Empty;
+    [JsonPropertyName("Currency")] public string Currency { get; set; } = string.Empty;
 }

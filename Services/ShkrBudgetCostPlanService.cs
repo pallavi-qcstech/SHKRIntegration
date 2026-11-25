@@ -112,24 +112,34 @@ public sealed class ShkrBudgetCostPlanService(
         return new BudgetCostHeaderResult(header.RecordId, header.SapNetwork, result.Success, result.ErrorMessage);
     }
 
-    private static string? ValidateLines(List<BudgetLine> lines)
+    public static string? ValidateLines(List<BudgetLine> lines)
     {
         if (lines.Count == 0)
         {
             return "Budget header has no lines with process_status = 'N'.";
         }
 
-        var missing = lines
-            .Where(l => l.Price is null || l.PriceUnit is null)
-            .Select(l => l.RecordId)
-            .ToList();
+        var problems = new List<string>();
+        foreach (var line in lines)
+        {
+            var missing = new List<string>();
+            if (line.Price is null) missing.Add("price");
+            if (line.PriceUnit is null) missing.Add("price_unit");
+            if (line.OperationQty is null) missing.Add("operation_qty");
+            if (string.IsNullOrWhiteSpace(line.Currency)) missing.Add("currency");
 
-        return missing.Count == 0
+            if (missing.Count > 0)
+            {
+                problems.Add($"record_id {line.RecordId}: {string.Join(", ", missing)}");
+            }
+        }
+
+        return problems.Count == 0
             ? null
-            : $"price or price_unit is NULL on budget line record_id {string.Join(", ", missing)}.";
+            : $"Missing on budget line {string.Join("; ", problems)}.";
     }
 
-    private static BudgetCostNetworkCreateRequest BuildRequest(
+    public static BudgetCostNetworkCreateRequest BuildRequest(
         BudgetHeader header, List<BudgetLine> lines)
     {
         var request = new BudgetCostNetworkCreateRequest
@@ -151,6 +161,8 @@ public sealed class ShkrBudgetCostPlanService(
                 WbsElement = line.SapWbsElement ?? string.Empty,
                 Price = FormatDecimal(line.Price, "0.00"),
                 PriceUnit = line.PriceUnit?.ToString(CultureInfo.InvariantCulture) ?? string.Empty,
+                OperationQty = FormatDecimal(line.OperationQty, "0.###"),
+                Currency = line.Currency?.Trim() ?? string.Empty,
             });
         }
 
@@ -372,7 +384,7 @@ public sealed class ShkrBudgetCostPlanService(
         const string sql = """
             SELECT
                 record_id, hdr_record_id, pmweb_budget_line_id, sap_activity, sap_activity_desc,
-                sap_control_key, sap_plant, sap_wbs_element, price_unit, price, process_status
+                sap_control_key, sap_plant, sap_wbs_element, price_unit, price, operation_qty, currency, process_status
             FROM xx_budget_line_stg_tbl_ob
             WHERE hdr_record_id = @HdrRecordId AND process_status = 'N'
             ORDER BY record_id
@@ -400,6 +412,8 @@ public sealed class ShkrBudgetCostPlanService(
                 SapWbsElement = GetString(reader, "sap_wbs_element"),
                 PriceUnit = GetInt32(reader, "price_unit"),
                 Price = GetDecimal(reader, "price"),
+                OperationQty = GetDecimal(reader, "operation_qty"),
+                Currency = GetString(reader, "currency"),
                 ProcessStatus = GetString(reader, "process_status"),
             });
         }
