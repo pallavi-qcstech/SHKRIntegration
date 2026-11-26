@@ -1,7 +1,7 @@
 USE [PMWeb]
 GO
 
-/****** Object:  StoredProcedure [dbo].[SHK_INT_BUDGET_OB_PRC]    Script Date: 11/24/2026 6:13:16 AM ******/
+/****** Object:  StoredProcedure [dbo].[SHK_INT_BUDGET_OB_PRC]    Script Date: 11/26/2026 10:01:49 AM ******/
 SET ANSI_NULLS ON
 GO
 
@@ -9,7 +9,8 @@ SET QUOTED_IDENTIFIER ON
 GO
 
 
-CREATE   PROC [dbo].[SHK_INT_BUDGET_OB_PRC] @TRAN_ID BIGINT
+
+CREATE PROC [dbo].[SHK_INT_BUDGET_OB_PRC] @TRAN_ID BIGINT
 AS
 
 SET XACT_ABORT ON
@@ -204,7 +205,7 @@ IF @ERROR_STATUS = 0
 		SET @MSG=''
 		print 'Calling API'
 		
-		SELECT @URL=CONCAT('http://localhost:8080/SHKRIntegration/api/Inbound/budgetcost?pmWebBudgetId=',@tran_id) --New Prod
+		SELECT @URL=CONCAT('http://Shaker.pmweb.local:8080/SHKRIntegration/api/Outbound/budgetcost?pmWebBudgetId=',@tran_id) --26/11/26 host Shaker.pmweb.local, route Outbound
 		EXEC SHK_INT_APICALL_PRC @URL,@MSG OUTPUT
 					
 		SET @cnt_api_error = (select count(*) from xx_budget_hdr_stg_tbl_ob where pmweb_budget_id=@tran_id

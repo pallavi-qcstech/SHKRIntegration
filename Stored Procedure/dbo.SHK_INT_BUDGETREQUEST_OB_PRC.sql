@@ -1,12 +1,14 @@
 USE [PMWeb]
 GO
 
-/****** Object:  StoredProcedure [dbo].[SHK_INT_BUDGETREQUEST_OB_PRC]    Script Date: 11/24/2026 6:13:53 AM ******/
+/****** Object:  StoredProcedure [dbo].[SHK_INT_BUDGETREQUEST_OB_PRC]    Script Date: 11/26/2026 10:02:02 AM ******/
 SET ANSI_NULLS ON
 GO
 
 SET QUOTED_IDENTIFIER ON
 GO
+
+
 
 
 CREATE PROC [dbo].[SHK_INT_BUDGETREQUEST_OB_PRC] @TRAN_ID BIGINT
@@ -43,6 +45,8 @@ DECLARE
 ,@cnt_hdr int
 ,@cnt_line int
 ,@cnt_api_error int
+,@cnt_api_success int
+,@ProjectNumber varchar(50)
 
 ---workflow variable
 ,@PrevStepId BIGINT
@@ -73,18 +77,18 @@ AND tran_type = @TranType
 
 print 'inserting  header ' 
 BEGIN TRY
-INSERT INTO xx_budget_hdr_stg_tbl_ob (pmweb_budget_id, project_code, project_id, sap_network, creation_date, process_status,attribute1)
+INSERT INTO xx_budget_hdr_stg_tbl_ob (pmweb_budget_id, project_code, project_id, sap_network, creation_date, process_status,attribute1,sap_approval_status)
 (
-select distinct @TRAN_ID, p.ProjectNumber,p.Id,n.Code,GETDATE(),'N',@TranType
-from dbo.CostManagement_BudgetDetails l
-	,dbo.CostManagement_Budgets h
+select distinct @TRAN_ID, p.ProjectNumber,p.Id,n.Code,GETDATE(),'N',@TranType,case when h.CategoryId=1 then 20 else 20 end
+from dbo.CostManagement_BudgetRequestDetails l
+	,dbo.CostManagement_BudgetRequests h
 	,dbo.Projects p
 	,dbo.WBS n
 	,dbo.WBS a
 	,dbo.WBSConfiguration wc
 where 1=1
 and h.Id = @TRAN_ID
-and l.BudgetId = h.Id
+and l.BudgetRequestId = h.Id
 and h.ProjectId = p.Id
 and p.Id = wc.ProjectId
 and n.ConfigurationId = wc.Id
@@ -129,30 +133,35 @@ IF @cnt_hdr=0
 		RETURN -1
 	END
 
-
 INSERT INTO xx_budget_line_stg_tbl_ob (hdr_record_id,pmweb_budget_id, sap_activity
 		,sap_activity_desc,sap_control_key,sap_plant,sap_wbs_element,price_unit,price
-		,creation_date, process_status,attribute1)
+		,creation_date, process_status,attribute1,pmweb_budget_line_id
+		,operation_qty,currency)
 	(
-	select x.record_id,@tran_id, a.Code --activity_code
+	select x.record_id,@tran_id,a.Code --activity_code
 		,SUBSTRING(a.Description,1,CHARINDEX('(', a.Description)-1)-- activity_desc
 		,SUBSTRING(n.Description,CHARINDEX('|', n.Description) + 1, 4) --control_key
 		,'1010' --plant
 		,wbs_ele.Code --wbs_element
 		,1 --priceunit
 		,sum(l.ExtCost)-- price
-		,GETDATE(),'N',@TranType
-	from dbo.CostManagement_BudgetDetails l
-		,dbo.CostManagement_Budgets h
+		,GETDATE(),'N',@TranType,
+		ROW_NUMBER() OVER (
+			ORDER BY a.Description
+			) line_number
+		,1
+		,(select code from dbo.Currencies where id=l.CurrencyId)
+	from dbo.CostManagement_BudgetRequestDetails l
+		,dbo.CostManagement_BudgetRequests h
 		,dbo.Projects p
 		,dbo.WBS n
 		,dbo.WBS a
 		,dbo.WBS wbs_ele
 		,dbo.WBSConfiguration wc
-		,xx_budget_hdr_tbl_ib x
+		,xx_budget_hdr_stg_tbl_ob x
 	where 1=1
 	and h.Id = @TRAN_ID
-	and l.BudgetId = h.Id
+	and l.BudgetRequestId = h.Id
 	and h.ProjectId = p.Id
 	and p.Id = wc.ProjectId
 	and n.ConfigurationId = wc.Id
@@ -166,10 +175,13 @@ INSERT INTO xx_budget_line_stg_tbl_ob (hdr_record_id,pmweb_budget_id, sap_activi
 	and x.process_status = 'N'
 	group by n.Code 
 		, a.Code 
-		,SUBSTRING(n.Description,1,CHARINDEX('(', n.Description)-1) 
+		,x.record_id
+		,n.Description
+		,a.Description
 		,wbs_ele.Code 
-		,SUBSTRING(n.Description,CHARINDEX('|', n.Description) + 1, 4) 
+		,l.CurrencyId
 	)
+
 
 SET @cnt_line = @@ROWCOUNT
 IF  @cnt_line > 0
@@ -190,17 +202,28 @@ IF @ERROR_STATUS = 0
 		SET @MSG=''
 		print 'Calling API'
 		
-		SELECT @URL=CONCAT('http://10.12.36.5:8036/ERPIntegration/api/Outbound/BudgetCreate?headerId=',@recordid) --New Prod
+		SELECT @URL=CONCAT('http://Shaker.pmweb.local:8080/SHKRIntegration/api/Outbound/budgetcost?pmWebBudgetId=',@tran_id) --26/11/26 host Shaker.pmweb.local, route Outbound
 		EXEC SHK_INT_APICALL_PRC @URL,@MSG OUTPUT
 					
-		SET @cnt_api_error = (select count(*) from xx_budget_hdr_stg_tbl_ob where pmweb_budget_id=@recordid
-								and process_status in ('E','N')
+		SET @cnt_api_error = (select count(*) from xx_budget_hdr_stg_tbl_ob where pmweb_budget_id=@tran_id
+								and process_status in ('E','N') and attribute1=@TranType
 								)
 
-		IF @cnt_api_error=0
+		SET @cnt_api_success = (select count(*) from xx_budget_hdr_stg_tbl_ob where pmweb_budget_id=@tran_id
+								and process_status ='S' and attribute1=@TranType
+								)
+
+		IF @cnt_api_error=0 AND @cnt_api_success > 0
 			BEGIN
-				UPDATE dbo.CostManagement_Budgets SET SpecField1 = 'S' WHERE Id = @tran_id
-				UPDATE dbo.CostManagement_BudgetDetails SET Field10 = 'S' WHERE BudgetId = @tran_id
+				UPDATE dbo.CostManagement_BudgetRequests SET SpecField1 = 'S' WHERE Id = @tran_id
+				UPDATE dbo.CostManagement_BudgetRequestDetails SET Field10 = 'S' WHERE BudgetRequestId = @tran_id
+
+				SET @ProjectNumber = (Select top 1 replace(project_code,' ','%20') from xx_budget_hdr_stg_tbl_ob 
+									  where pmweb_budget_id=@tran_id and attribute1=@TranType)
+
+				---Call the Set project status API
+				SELECT @URL=CONCAT('http://Shaker.pmweb.local:8080/SHKRIntegration/api/Outbound/setProjectStatus?projectCode=',@ProjectNumber,'&userStatus=',20) --New Prod
+				EXEC SHK_INT_APICALL_PRC @URL,@MSG OUTPUT
 			END
 		ELSE
 			BEGIN
