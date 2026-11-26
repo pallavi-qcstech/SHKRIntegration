@@ -101,7 +101,7 @@ public sealed class SapReturnMessage
     private static bool SameNumber(string a, string b) =>
         string.Equals(a.TrimStart('0'), b.TrimStart('0'), StringComparison.OrdinalIgnoreCase);
 
-    public override string ToString() => $"{Type} {$"{Id}/{Number}".Trim('/')}: {Message}".Trim();
+    public override string ToString() => string.IsNullOrWhiteSpace(Message) ? $"{Type} {$"{Id}/{Number}".Trim('/')}".Trim() : Message.Trim();
 }
 
 public sealed record NetworkActivitySyncResult(

@@ -3,6 +3,7 @@ using System.Text;
 using System.Text.Encodings.Web;
 using System.Text.Json;
 using Microsoft.Extensions.Options;
+using SHKRIntegration.Extensions;
 using SHKRIntegration.Models;
 using SHKRIntegration.Options;
 
@@ -175,65 +176,8 @@ public sealed class ShkrSetProjectStatusService(
             .Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries)
             .Any(s => string.Equals(s, status.Trim(), StringComparison.OrdinalIgnoreCase));
 
-    public static string ReadSapError(string body, int statusCode)
-    {
-        if (string.IsNullOrWhiteSpace(body))
-        {
-            return $"{statusCode} (no response body)";
-        }
-
-        try
-        {
-            using var document = JsonDocument.Parse(body);
-            if (document.RootElement.ValueKind != JsonValueKind.Object ||
-                !document.RootElement.TryGetProperty("error", out var error))
-            {
-                return body;
-            }
-
-            var texts = new List<string>();
-            if (error.TryGetProperty("innererror", out var innerError) &&
-                innerError.TryGetProperty("errordetails", out var details) &&
-                details.ValueKind == JsonValueKind.Array)
-            {
-                foreach (var detail in details.EnumerateArray())
-                {
-                    if (!detail.TryGetProperty("message", out var message) || message.ValueKind != JsonValueKind.String)
-                    {
-                        continue;
-                    }
-
-                    var text = message.GetString()!.Trim();
-                    var code = detail.TryGetProperty("code", out var codeElement) && codeElement.ValueKind == JsonValueKind.String
-                        ? codeElement.GetString()
-                        : null;
-
-                    if (text.Length == 0 || (code is not null && code.StartsWith("/IWBEP/", StringComparison.OrdinalIgnoreCase)))
-                    {
-                        continue;
-                    }
-
-                    texts.Add(string.IsNullOrWhiteSpace(code) ? text : $"{code}: {text}");
-                }
-            }
-
-            if (texts.Count == 0 &&
-                error.TryGetProperty("message", out var topMessage) &&
-                topMessage.ValueKind == JsonValueKind.Object &&
-                topMessage.TryGetProperty("value", out var value) &&
-                value.ValueKind == JsonValueKind.String &&
-                !string.IsNullOrWhiteSpace(value.GetString()))
-            {
-                texts.Add(value.GetString()!.Trim());
-            }
-
-            return texts.Count == 0 ? body : string.Join("; ", texts.Distinct());
-        }
-        catch (JsonException)
-        {
-            return body;
-        }
-    }
+    public static string ReadSapError(string body, int statusCode) =>
+        SapErrorMessageExtensions.ExtractSapErrorMessage(body, statusCode);
 
     private static SetProjectStatusResult Fail(string project, string status, int replyStatusCode, string error, int? sapHttpStatus = null) =>
         new(project, status, false, sapHttpStatus, null, null, null, error, replyStatusCode);

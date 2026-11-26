@@ -3,6 +3,7 @@ using System.Net;
 using System.Text.Json;
 using Microsoft.Data.SqlClient;
 using Microsoft.Extensions.Options;
+using SHKRIntegration.Extensions;
 using SHKRIntegration.Models;
 using SHKRIntegration.Options;
 
@@ -112,26 +113,7 @@ public abstract class ShkrGetPrPoStatusServiceBase(
         return read.SapMessage;
     }
 
-    public static string? ReadSapErrorValue(string body)
-    {
-        try
-        {
-            using var document = JsonDocument.Parse(body);
-            if (document.RootElement.ValueKind == JsonValueKind.Object &&
-                document.RootElement.TryGetProperty("error", out var error) &&
-                error.TryGetProperty("message", out var message) &&
-                message.TryGetProperty("value", out var value) &&
-                value.ValueKind == JsonValueKind.String)
-            {
-                return value.GetString();
-            }
-        }
-        catch (JsonException)
-        {
-        }
-
-        return null;
-    }
+    public static string? ReadSapErrorValue(string body) => SapErrorMessageExtensions.TryReadSapErrorMessage(body);
 
     private static StatusReadResult Fail(long recordId, int replyStatusCode, string error, string? sapNumber = null) =>
         new(recordId, sapNumber, null, null, null, null, false, error, replyStatusCode);

@@ -198,8 +198,8 @@ public sealed class ShkrNetworkActivityService(
         if ((int)statusCode is < 200 or >= 300)
         {
             using var errorResponse = new HttpResponseMessage(statusCode) { Content = new StringContent(body) };
-            var sapError = await errorResponse.ReadSapErrorMessageAsync(cancellationToken);
-            var error = $"HTTP {(int)statusCode}: {sapError}";
+            var error = await errorResponse.ReadSapErrorMessageAsync(cancellationToken);
+            logger.LogError("Network {Network}: SAP answered {StatusCode}: {SapErrorMessage}", network, (int)statusCode, error);
             return rows.ToDictionary(r => r.RecordId, _ => (string?)error);
         }
 
