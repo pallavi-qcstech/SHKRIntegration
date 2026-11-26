@@ -11,6 +11,8 @@ namespace SHKRIntegration.Extensions;
 
 public static class ShkrSapIntegrationExtensions
 {
+    public static readonly TimeSpan NoRetryTimeout = TimeSpan.FromSeconds(60);
+
     public static IServiceCollection AddShkrSapApiOptions(this IServiceCollection services, IConfiguration configuration)
     {
         services.Configure<ShkrSapApiOptions>(configuration.GetSection(ShkrSapApiOptions.SectionName));
@@ -35,7 +37,7 @@ public static class ShkrSapIntegrationExtensions
     public static IHttpClientBuilder AddShkrSapHttpClientNoRetry(this IServiceCollection services, string clientName)
     {
         return services.AddHttpClient(clientName, ConfigureShkrSapClient)
-            .ConfigureHttpClient(c => c.Timeout = TimeSpan.FromSeconds(60))
+            .ConfigureHttpClient(c => c.Timeout = NoRetryTimeout)
             .ConfigurePrimaryHttpMessageHandler(CreateShkrSapHandler)
             .AddHttpMessageHandler<ShkrSapCsrfTokenHandler>()
             .AddHttpMessageHandler<ShkrSapRequestResponseLoggingHandler>();

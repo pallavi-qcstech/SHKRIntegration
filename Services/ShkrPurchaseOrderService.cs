@@ -41,25 +41,51 @@ public sealed class ShkrPurchaseOrderService(
             throw new ArgumentException($"Purchase Order header {header.RecordId} has no lines.");
         }
 
+        PurchaseOrderCreateResult result;
         try
         {
             var request = BuildRequest(header, lines);
 
-            var result = await SendToSapAsync(request, cancellationToken);
-
-            await PersistResultAsync(header.RecordId, result, cancellationToken);
-
-            logger.LogInformation(
-                "Purchase Order create (header record_id={RecordId}) completed: Success={Success}, PoNumber={PoNumber}.",
-                header.RecordId, result.Success, result.PoNumber);
-
-            return result;
+            result = await SendToSapAsync(request, CancellationToken.None);
         }
-        catch (Exception ex) when (ex is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
+        catch (Exception ex)
         {
-            logger.LogError(ex, "Purchase Order create failed for header record_id {RecordId}.", header.RecordId);
-            await PersistResultAsync(header.RecordId, new PurchaseOrderCreateResult(false, null, ex.Message), cancellationToken);
+            var sapCheck = $"ME23N, vendor {header.Vendor}, PR {lines[0].PreqNo}";
+            var message = ex.ToSapCreateFailureMessage("PO", sapCheck);
+            logger.LogError(ex, "Purchase Order create failed for header record_id {RecordId}: {Message}", header.RecordId, message);
+            await SaveResultAsync(header.RecordId, new PurchaseOrderCreateResult(false, null, message));
             throw;
+        }
+
+        await SaveResultAsync(header.RecordId, result);
+
+        logger.LogInformation(
+            "Purchase Order create (header record_id={RecordId}) completed: Success={Success}, PoNumber={PoNumber}.",
+            header.RecordId, result.Success, result.PoNumber);
+
+        return result;
+    }
+
+    private async Task SaveResultAsync(long hdrRecordId, PurchaseOrderCreateResult result)
+    {
+        try
+        {
+            await PersistResultAsync(hdrRecordId, result, CancellationToken.None);
+        }
+        catch (Exception first)
+        {
+            logger.LogWarning(first, "Saving the Purchase Order result for header record_id {RecordId} failed; trying once more.", hdrRecordId);
+            try
+            {
+                await PersistResultAsync(hdrRecordId, result, CancellationToken.None);
+            }
+            catch (Exception second)
+            {
+                logger.LogError(second,
+                    "Saving the Purchase Order result for header record_id {RecordId} failed again. SAP result: Success={Success}, PoNumber={PoNumber}, Error={Error}",
+                    hdrRecordId, result.Success, result.PoNumber, result.ErrorMessage);
+                throw;
+            }
         }
     }
 
@@ -77,6 +103,8 @@ public sealed class ShkrPurchaseOrderService(
             DocDate = header.DocDate ?? string.Empty,
         };
 
+        var serialNoByGlAccount = SerialNoByGlAccount(lines);
+
         foreach (var line in lines)
         {
             var poItem = line.PoItem ?? string.Empty;
@@ -88,7 +116,7 @@ public sealed class ShkrPurchaseOrderService(
                 ShortText = line.ShortText ?? string.Empty,
                 Plant = line.Plant ?? string.Empty,
                 MatlGroup = line.MatGrp ?? string.Empty,
-                Quantity = FormatDecimal(line.Quantity, "0.###"),
+                Quantity = FormatQuantity(line.Quantity),
                 PoUnit = line.PoUnit ?? string.Empty,
                 TaxCode = line.TaxCode ?? string.Empty,
                 AcctAssCat = line.AcctAssCat ?? string.Empty,
@@ -99,7 +127,7 @@ public sealed class ShkrPurchaseOrderService(
             request.PoAccountSet.Add(new PoAccountSetItem
             {
                 PoItem = poItem,
-                SerialNo = "01",
+                SerialNo = serialNoByGlAccount[GlKey(line)],
                 GlAccount = line.GlAccount ?? string.Empty,
                 WbsElement = NullIfBlank(line.WbsElement),
                 Network = NullIfBlank(line.Network),
@@ -110,7 +138,7 @@ public sealed class ShkrPurchaseOrderService(
             {
                 PoItem = poItem,
                 ShortText = line.SrvShortText ?? string.Empty,
-                Quantity = FormatDecimal(line.SrvQuantity, "0.###"),
+                Quantity = FormatQuantity(line.SrvQuantity),
                 BaseUom = line.SrvUom ?? string.Empty,
                 GrPrice = FormatDecimal(line.SrvGrPrice, "0.##"),
                 MatlGroup = line.SrvMatlGroup ?? string.Empty,
@@ -122,6 +150,26 @@ public sealed class ShkrPurchaseOrderService(
 
     private static string FormatDecimal(decimal? value, string format) =>
         value?.ToString(format, CultureInfo.InvariantCulture) ?? string.Empty;
+
+    private static Dictionary<string, string> SerialNoByGlAccount(List<PurchaseOrderLine> lines)
+    {
+        var serials = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (var line in lines.OrderBy(l => l.PoItem ?? string.Empty, StringComparer.Ordinal))
+        {
+            var gl = GlKey(line);
+            if (!serials.ContainsKey(gl))
+            {
+                serials[gl] = (serials.Count + 1).ToString("00", CultureInfo.InvariantCulture);
+            }
+        }
+
+        return serials;
+    }
+
+    private static string GlKey(PurchaseOrderLine line) => (line.GlAccount ?? string.Empty).Trim();
+
+    private static string FormatQuantity(decimal? value) =>
+        value is null ? string.Empty : decimal.Truncate(value.Value).ToString("0", CultureInfo.InvariantCulture);
 
     private static string? NullIfBlank(string? value) =>
         string.IsNullOrWhiteSpace(value) ? null : value.Trim();
@@ -148,12 +196,24 @@ public sealed class ShkrPurchaseOrderService(
             return new PurchaseOrderCreateResult(false, null, sapErrorMessage);
         }
 
-        var envelope = await response.Content.ReadFromJsonAsync<ODataEnvelope<CreatePurchaseOrderResponseBody>>(cancellationToken)
-            ?? throw new InvalidOperationException("SAP Z_PO_CREATE_SRV returned an empty response body.");
-
-        if (string.IsNullOrWhiteSpace(envelope.D.PoNumber))
+        ODataEnvelope<CreatePurchaseOrderResponseBody>? envelope;
+        try
         {
-            throw new InvalidOperationException("SAP Z_PO_CREATE_SRV returned 201 but no PoNumber in the response body.");
+            envelope = await response.Content.ReadFromJsonAsync<ODataEnvelope<CreatePurchaseOrderResponseBody>>(cancellationToken);
+        }
+        catch (Exception ex)
+        {
+            throw new SapCreateReplyException("SAP Z_PO_CREATE_SRV answered with success but the response body could not be read.", ex);
+        }
+
+        if (envelope is null)
+        {
+            throw new SapCreateReplyException("SAP Z_PO_CREATE_SRV returned an empty response body.");
+        }
+
+        if (string.IsNullOrWhiteSpace(envelope.D?.PoNumber))
+        {
+            throw new SapCreateReplyException("SAP Z_PO_CREATE_SRV returned 201 but no PoNumber in the response body.");
         }
 
         return new PurchaseOrderCreateResult(true, envelope.D.PoNumber, null);

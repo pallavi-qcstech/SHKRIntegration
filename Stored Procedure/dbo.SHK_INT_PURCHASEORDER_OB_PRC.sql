@@ -83,7 +83,11 @@ Change Log
           selected) stops the PO before SAP is called (same as service PR).
           Each line's PR item must be a service PR item (ITEM_CAT 9 in PR staging); a PR sent before
           the service PR change stops the PO before SAP is called.
-          [TBC] Costcenter is in the sample payloads but is NOT sent - no PMWeb source agreed.
+          Costcenter is not sent: not needed with Acctasscat P (user 26/11/26).
+
+26/11/26  Quantity = line quantity (CostManagement_CommitmentDetails.Quantity) with the decimals cut off,
+          the same on the PO item and the POSRVSet service line (was item quantity 1), same rule as the PR.
+          A line with quantity blank or less than 1 stops the PO before SAP is called.
           
 
 */
@@ -409,7 +413,7 @@ BEGIN
                 LEFT(ISNULL(d.Description, ''), 40),
                 NULLIF(LTRIM(RTRIM(pb.SpecField3)), ''),  -- mat_grp: same as PR (Estimate_PreBids.SpecField3)
                 pgm.SpecField1,                        -- plant: same as PR
-                1,                                     ---24/11/26 service PO: item quantity 1 (line quantity is on the service line).  Before: d.Quantity,
+                ROUND(d.Quantity, 0, 1),               ---26/11/26 item quantity = line quantity, decimals cut off (was 1)
                 LTRIM(RTRIM(LEFT(uom.UOM, CHARINDEX(' - ', uom.UOM + ' - ') - 1))),
                 d.ExtCost,                             -- net_price: line total - 24/11/26 staged for reference only, NOT sent
                 '1',                                   -- price_unit - 24/11/26 NOT sent (service item)
@@ -434,11 +438,11 @@ BEGIN
                 ---24/11/26 service PO: ItemCat 9 + one POSRVSet service line per PO item
                 '9',                                                                      -- item_cat
                 LEFT(ISNULL(d.Description, ''), 40),                                      -- srv_short_text: same as the item text
-                d.Quantity,                                                               -- srv_quantity: line quantity
+                ROUND(d.Quantity, 0, 1),                                                  -- srv_quantity: line quantity, decimals cut off (26/11/26)
                 LTRIM(RTRIM(LEFT(uom.UOM, CHARINDEX(' - ', uom.UOM + ' - ') - 1))),       -- srv_uom: same as po_unit
                 d.UnitCost,                                                               -- srv_gr_price: price per unit (rounded to 2 decimals)
                 NULLIF(LTRIM(RTRIM(pb.SpecField3)), ''),                                  -- srv_matl_group: same as mat_grp
-                -- [TBC] Costcenter: in the sample payloads, not sent - no PMWeb source agreed
+                -- Costcenter not sent: not needed with Acctasscat P (26/11/26)
                 'N', 'I', GETDATE(), GETDATE()
             FROM dbo.CostManagement_CommitmentDetails d
             JOIN dbo.CostManagement_Commitments h ON h.Id = d.CommitmentId
@@ -592,9 +596,10 @@ BEGIN
 
         ----------Mandatory Field Validation---------
         SELECT
-            -- 24/11/26 service PO: the line quantity is on the service line (srv_quantity), the item quantity is always 1
+            -- 26/11/26 item and service quantity = line quantity with the decimals cut off; below 1 is rejected
             @bad_item_qty = MAX(CASE WHEN po_item IS NULL OR LTRIM(RTRIM(po_item)) = ''
-                                       OR srv_quantity IS NULL OR srv_quantity <= 0 THEN 1 ELSE 0 END),
+                                       OR quantity IS NULL OR quantity < 1
+                                       OR srv_quantity IS NULL OR srv_quantity < 1 THEN 1 ELSE 0 END),
             -- 24/11/26 delivery date checks removed: no POSCHEDSet on a service PO
             @bad_tax     = MAX(CASE WHEN tax_code IS NULL OR LEN(tax_code) <> 2 THEN 1 ELSE 0 END),
             @bad_preq_no  = MAX(CASE WHEN preq_no IS NULL OR LTRIM(RTRIM(preq_no)) = '' THEN 1 ELSE 0 END),
@@ -620,7 +625,7 @@ BEGIN
                   CASE WHEN @bad_doc_type = 1 THEN @NL + 'PO Document Type is not set on the project (Project > PO Document Type, e.g. ZLOC).' ELSE '' END
                 + CASE WHEN @bad_vendor = 1 THEN @NL + 'Vendor missing - the Commitment has no vendor company, or the company has no SAP vendor number (Company Code).' ELSE '' END
                 + CASE WHEN @bad_currency = 1 THEN @NL + 'Currency missing on the Commitment header.' ELSE '' END
-                + CASE WHEN @bad_item_qty = 1 THEN @NL + 'Line item number and quantity must not be blank/zero.' ELSE '' END
+                + CASE WHEN @bad_item_qty = 1 THEN @NL + 'Line item number must not be blank and quantity must be at least 1 (decimals are cut off before sending to SAP).' ELSE '' END
                 + CASE WHEN @bad_uom = 1 THEN @NL + 'Unit of measure missing on one or more Commitment lines.' ELSE '' END
                 + CASE WHEN @bad_price = 1 THEN @NL + 'Unit cost must be greater than zero on every Commitment line (sent to SAP as the service price).' ELSE '' END
                 + CASE WHEN @bad_mat_grp = 1 THEN @NL + 'Material group missing on the PreBid (PR) this Commitment was generated from - it must be filled, as it is sent to SAP on the PR.' ELSE '' END
