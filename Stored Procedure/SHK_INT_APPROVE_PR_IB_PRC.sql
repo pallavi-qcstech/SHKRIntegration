@@ -50,7 +50,7 @@ DECLARE
 ,@hdr_record_id BIGINT = 0
 ,@URL NVARCHAR(500)
 ,@MSG VARCHAR(MAX)
-,@BASE_URL NVARCHAR(200) = 'http://localhost:8080/SHKRIntegration/api/Inbound/prstatus'
+,@BASE_URL NVARCHAR(200) = 'http://Shaker.pmweb.local:8080/SHKRIntegration/api/Inbound/prstatus' ---26/11/26 host Shaker.pmweb.local (was localhost), the same as the PR/PO/CO outbound procedures
 
 SET @ERROR_DESC=''
 SET @ERROR_STATUS=0
