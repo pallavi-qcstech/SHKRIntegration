@@ -56,9 +56,9 @@ builder.Services.AddControllers();
 
 var app = builder.Build();
 
-app.UseExceptionHandler();
-
 app.UseMiddleware<ShkrRequestResponseLoggingMiddleware>();
+
+app.UseExceptionHandler();
 
 app.MapHealthChecks("/health");
 

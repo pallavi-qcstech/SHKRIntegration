@@ -16,8 +16,8 @@ public sealed class ShkrRequestResponseLoggingMiddleware(
         var requestBody = await ReadRequestBodyAsync(context.Request);
 
         logger.LogDebug(
-            "PMWeb request: {Method} {Path}{NewLine}{RequestBody}",
-            context.Request.Method, context.Request.Path, Environment.NewLine, requestBody);
+            "PMWeb request: {Method} {Path}{QueryString}{NewLine}{RequestBody}",
+            context.Request.Method, context.Request.Path, context.Request.QueryString, Environment.NewLine, requestBody);
 
         var originalResponseBody = context.Response.Body;
         using var responseBuffer = new MemoryStream();
@@ -34,8 +34,8 @@ public sealed class ShkrRequestResponseLoggingMiddleware(
             var responseBody = responseBytes.Length > 0 ? Encoding.UTF8.GetString(responseBytes) : "(empty)";
 
             logger.LogDebug(
-                "PMWeb response: {StatusCode} for {Method} {Path}{NewLine}{ResponseBody}",
-                context.Response.StatusCode, context.Request.Method, context.Request.Path, Environment.NewLine, responseBody);
+                "PMWeb response: {StatusCode} for {Method} {Path}{QueryString}{NewLine}{ResponseBody}",
+                context.Response.StatusCode, context.Request.Method, context.Request.Path, context.Request.QueryString, Environment.NewLine, responseBody);
 
             responseBuffer.Seek(0, SeekOrigin.Begin);
             await responseBuffer.CopyToAsync(originalResponseBody);

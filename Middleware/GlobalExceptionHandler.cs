@@ -19,8 +19,8 @@ public sealed class GlobalExceptionHandler(
 
         var (statusCode, title) = MapException(exception);
 
-        logger.LogError(exception, "Unhandled exception processing {Method} {Path}",
-            httpContext.Request.Method, httpContext.Request.Path);
+        logger.LogError(exception, "Unhandled exception processing {Method} {Path}{QueryString}",
+            httpContext.Request.Method, httpContext.Request.Path, httpContext.Request.QueryString);
 
         httpContext.Response.StatusCode = statusCode;
 
