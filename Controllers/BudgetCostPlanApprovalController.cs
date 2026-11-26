@@ -12,9 +12,9 @@ public sealed class BudgetCostPlanApprovalController(ShkrBudgetCostPlanService b
     [HttpPost("budgetcost")]
     [HttpPost(LegacyInboundRoute)]
     public async Task<IActionResult> Sync(
-        [FromQuery] int? pmWebBudgetId, CancellationToken cancellationToken)
+        [FromQuery] int? pmWebBudgetId, [FromQuery] string? tranType, CancellationToken cancellationToken)
     {
-        var result = await budgetCostPlanService.CreateAsync(pmWebBudgetId ?? 0, cancellationToken);
+        var result = await budgetCostPlanService.CreateAsync(pmWebBudgetId ?? 0, tranType, cancellationToken);
         return Ok(result);
     }
 }

@@ -4,6 +4,7 @@ using System.Text.Encodings.Web;
 using System.Text.Json;
 using Microsoft.Data.SqlClient;
 using Microsoft.Extensions.Options;
+using SHKRIntegration.Extensions;
 using SHKRIntegration.Models;
 using SHKRIntegration.Options;
 
@@ -20,7 +21,9 @@ public sealed class ShkrBudgetCostPlanService(
 
     private const string ServicePath = "/sap/opu/odata/sap/Z_PS_NETWORK_SRV/";
     private const string CsrfHeaderName = "x-csrf-token";
-    private const string TranType = "Budgets";
+    public const string TranTypeBudgets = "Budgets";
+    public const string TranTypeBudgetRequests = "BudgetRequests";
+    public const string DefaultTranType = TranTypeBudgetRequests;
 
     private const string StatusSuccess = "S";
     private const string StatusError = "E";
@@ -38,20 +41,44 @@ public sealed class ShkrBudgetCostPlanService(
     private readonly ShkrSapApiOptions _options = shkrSapOptions.Value;
     private readonly ShkrDatabaseOptions _databaseOptions = databaseOptions.Value;
 
-    public async Task<BudgetCostCreateResult> CreateAsync(long pmWebBudgetId, CancellationToken cancellationToken = default)
+    public static string ResolveTranType(string? tranType)
     {
+        var value = tranType?.Trim();
+        if (string.IsNullOrEmpty(value))
+        {
+            return DefaultTranType;
+        }
+
+        if (string.Equals(value, TranTypeBudgets, StringComparison.OrdinalIgnoreCase))
+        {
+            return TranTypeBudgets;
+        }
+
+        if (string.Equals(value, TranTypeBudgetRequests, StringComparison.OrdinalIgnoreCase))
+        {
+            return TranTypeBudgetRequests;
+        }
+
+        throw new ArgumentException(
+            $"tranType '{value}' is not valid. Use {TranTypeBudgets} or {TranTypeBudgetRequests}. SAP was not called.");
+    }
+
+    public async Task<BudgetCostCreateResult> CreateAsync(long pmWebBudgetId, string? tranType = null, CancellationToken cancellationToken = default)
+    {
+        var resolvedTranType = ResolveTranType(tranType);
+
         await RunLock.WaitAsync(cancellationToken);
         try
         {
-            var headers = await GetHeadersAsync(pmWebBudgetId, cancellationToken);
+            var headers = await GetHeadersAsync(pmWebBudgetId, resolvedTranType, cancellationToken);
             if (headers.Count == 0)
             {
                 throw new ArgumentException(
-                    $"No Budget header found for pmweb_budget_id {pmWebBudgetId} with process_status = 'N'.");
+                    $"No {resolvedTranType} header found for pmweb_budget_id {pmWebBudgetId} with process_status = 'N'.");
             }
 
-            logger.LogInformation("Budget {PmWebBudgetId}: {Count} network(s) to send ({RecordIds}).",
-                pmWebBudgetId, headers.Count, string.Join(", ", headers.Select(h => h.RecordId)));
+            logger.LogInformation("Budget {PmWebBudgetId} ({TranType}): {Count} network(s) to send ({RecordIds}).",
+                pmWebBudgetId, resolvedTranType, headers.Count, string.Join(", ", headers.Select(h => h.RecordId)));
 
             var results = new List<BudgetCostHeaderResult>();
             foreach (var header in headers)
@@ -183,7 +210,7 @@ public sealed class ShkrBudgetCostPlanService(
         {
             var body = await response.Content.ReadAsStringAsync(cancellationToken);
             throw new HttpRequestException(
-                $"Z_PS_NETWORK_SRV answered {(int)response.StatusCode} ({response.StatusCode}): {ReadSapError(body, (int)response.StatusCode)}");
+                $"Z_PS_NETWORK_SRV answered {(int)response.StatusCode} ({response.StatusCode}): {SapErrorMessageExtensions.ExtractSapErrorMessage(body, (int)response.StatusCode)}");
         }
 
         var token = response.Headers.TryGetValues(CsrfHeaderName, out var values) ? values.FirstOrDefault() : null;
@@ -213,9 +240,9 @@ public sealed class ShkrBudgetCostPlanService(
 
         if (!response.IsSuccessStatusCode)
         {
-            var sapErrorMessage = $"HTTP {(int)response.StatusCode}: {ReadSapError(body, (int)response.StatusCode)}";
-            logger.LogError("SAP NETWORKSet call for network {Network} failed: {SapErrorMessage}",
-                requestData.Network, sapErrorMessage);
+            var sapErrorMessage = SapErrorMessageExtensions.ExtractSapErrorMessage(body, (int)response.StatusCode);
+            logger.LogError("SAP NETWORKSet call for network {Network} failed with status {StatusCode}: {SapErrorMessage}",
+                requestData.Network, (int)response.StatusCode, sapErrorMessage);
             return new BudgetCostNetworkCreateResult(false, requestData.Network, sapErrorMessage);
         }
 
@@ -239,112 +266,13 @@ public sealed class ShkrBudgetCostPlanService(
             }
         }
 
-        var failures = messages.Where(m => m.IsFailure).Select(m => m.ToString()).ToList();
+        var failures = messages.Where(m => m.IsFailure).Select(m => m.ToString()).Distinct(StringComparer.Ordinal).ToList();
         return failures.Count == 0
             ? new BudgetCostNetworkCreateResult(true, network, null)
             : new BudgetCostNetworkCreateResult(false, network, string.Join("; ", failures));
     }
 
-    private static string ReadSapError(string body, int statusCode)
-    {
-        if (string.IsNullOrWhiteSpace(body))
-        {
-            return $"{statusCode} (no response body)";
-        }
-
-        try
-        {
-            using var document = JsonDocument.Parse(body);
-            if (!document.RootElement.TryGetProperty("error", out var error))
-            {
-                return body;
-            }
-
-            var texts = new List<string>();
-            var genericTexts = new List<string>();
-            string? transactionId = null;
-
-            if (error.TryGetProperty("innererror", out var innerError))
-            {
-                if (innerError.TryGetProperty("transactionid", out var transactionIdElement) &&
-                    transactionIdElement.ValueKind == JsonValueKind.String)
-                {
-                    transactionId = transactionIdElement.GetString();
-                }
-
-                if (innerError.TryGetProperty("errordetails", out var errorDetails) &&
-                    errorDetails.ValueKind == JsonValueKind.Array)
-                {
-                    foreach (var detail in errorDetails.EnumerateArray())
-                    {
-                        if (detail.TryGetProperty("message", out var detailMessage) &&
-                            detailMessage.ValueKind == JsonValueKind.String)
-                        {
-                            var code = detail.TryGetProperty("code", out var codeElement) &&
-                                       codeElement.ValueKind == JsonValueKind.String
-                                ? codeElement.GetString()
-                                : null;
-                            var text = detailMessage.GetString()!.Trim();
-                            if (text.Length == 0)
-                            {
-                                continue;
-                            }
-
-                            if (IsGenericSapError(code, text))
-                            {
-                                genericTexts.Add(text);
-                            }
-                            else
-                            {
-                                texts.Add(string.IsNullOrWhiteSpace(code) ? text : $"{code}: {text}");
-                            }
-                        }
-                    }
-                }
-            }
-
-            if (texts.Count == 0 &&
-                error.TryGetProperty("message", out var message) &&
-                message.TryGetProperty("value", out var value) &&
-                value.ValueKind == JsonValueKind.String &&
-                !string.IsNullOrWhiteSpace(value.GetString()))
-            {
-                var text = value.GetString()!.Trim();
-                if (IsGenericSapError(null, text))
-                {
-                    genericTexts.Add(text);
-                }
-                else
-                {
-                    texts.Add(text);
-                }
-            }
-
-            if (texts.Count == 0)
-            {
-                texts.AddRange(genericTexts);
-            }
-
-            if (texts.Count == 0)
-            {
-                return body;
-            }
-
-            var joined = string.Join("; ", texts.Distinct());
-            return transactionId is null ? joined : $"{joined} (SAP transaction {transactionId})";
-        }
-        catch (JsonException)
-        {
-            return body;
-        }
-    }
-
-    private static bool IsGenericSapError(string? code, string text) =>
-        (code is not null && code.StartsWith("/IWBEP/", StringComparison.OrdinalIgnoreCase)) ||
-        text.StartsWith("Errors occurred during processing", StringComparison.OrdinalIgnoreCase) ||
-        text.Equals("An exception was raised", StringComparison.OrdinalIgnoreCase);
-
-    private async Task<List<BudgetHeader>> GetHeadersAsync(long pmWebBudgetId, CancellationToken cancellationToken)
+    private async Task<List<BudgetHeader>> GetHeadersAsync(long pmWebBudgetId, string tranType, CancellationToken cancellationToken)
     {
         const string sql = """
             SELECT record_id, pmweb_budget_id, project_code, project_id, sap_network, process_status
@@ -359,7 +287,7 @@ public sealed class ShkrBudgetCostPlanService(
         await connection.OpenAsync(cancellationToken);
         await using var command = new SqlCommand(sql, connection);
         command.Parameters.AddWithValue("@PmWebBudgetId", pmWebBudgetId);
-        command.Parameters.AddWithValue("@TranType", TranType);
+        command.Parameters.AddWithValue("@TranType", tranType);
 
         var headers = new List<BudgetHeader>();
 
