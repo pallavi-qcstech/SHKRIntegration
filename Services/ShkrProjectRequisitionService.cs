@@ -41,25 +41,51 @@ public sealed class ShkrProjectRequisitionService(
             throw new ArgumentException($"Project Requisition header {header.RecordId} has no lines.");
         }
 
+        ProjectRequisitionCreateResult result;
         try
         {
             var request = BuildRequest(header, lines);
 
-            var result = await SendToSapAsync(request, cancellationToken);
-
-            await PersistResultAsync(header.RecordId, result, lines, cancellationToken);
-
-            logger.LogInformation(
-                "Project Requisition create (header record_id={RecordId}) completed: Success={Success}, Banfn={Banfn}.",
-                header.RecordId, result.Success, result.Banfn);
-
-            return result;
+            result = await SendToSapAsync(request, CancellationToken.None);
         }
-        catch (Exception ex) when (ex is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
+        catch (Exception ex)
         {
-            logger.LogError(ex, "Project Requisition create failed for header record_id {RecordId}.", header.RecordId);
-            await PersistResultAsync(header.RecordId, new ProjectRequisitionCreateResult(false, null, ex.Message), lines, cancellationToken);
+            var sapCheck = $"ME53N, tracking number {lines[0].TrackingNo}";
+            var message = ex.ToSapCreateFailureMessage("PR", sapCheck);
+            logger.LogError(ex, "Project Requisition create failed for header record_id {RecordId}: {Message}", header.RecordId, message);
+            await SaveResultAsync(header.RecordId, new ProjectRequisitionCreateResult(false, null, message), lines);
             throw;
+        }
+
+        await SaveResultAsync(header.RecordId, result, lines);
+
+        logger.LogInformation(
+            "Project Requisition create (header record_id={RecordId}) completed: Success={Success}, Banfn={Banfn}.",
+            header.RecordId, result.Success, result.Banfn);
+
+        return result;
+    }
+
+    private async Task SaveResultAsync(long hdrRecordId, ProjectRequisitionCreateResult result, List<ProjectRequisitionLine> lines)
+    {
+        try
+        {
+            await PersistResultAsync(hdrRecordId, result, lines, CancellationToken.None);
+        }
+        catch (Exception first)
+        {
+            logger.LogWarning(first, "Saving the Project Requisition result for header record_id {RecordId} failed; trying once more.", hdrRecordId);
+            try
+            {
+                await PersistResultAsync(hdrRecordId, result, lines, CancellationToken.None);
+            }
+            catch (Exception second)
+            {
+                logger.LogError(second,
+                    "Saving the Project Requisition result for header record_id {RecordId} failed again. SAP result: Success={Success}, Banfn={Banfn}, Error={Error}",
+                    hdrRecordId, result.Success, result.Banfn, result.ErrorMessage);
+                throw;
+            }
         }
     }
 
@@ -84,7 +110,7 @@ public sealed class ShkrProjectRequisitionService(
                 MatGrp = line.MatGrp ?? string.Empty,
                 Plant = line.Plant ?? string.Empty,
                 PurGroup = line.PurGroup ?? string.Empty,
-                Quantity = FormatDecimal(line.Quantity, "0.000"),
+                Quantity = FormatQuantity(line.Quantity),
                 Unit = line.Uom ?? string.Empty,
                 PreqDate = line.PrebidDate ?? string.Empty,
                 RelDate = line.RelDate ?? string.Empty,
@@ -128,7 +154,7 @@ public sealed class ShkrProjectRequisitionService(
                 PckgNo = line.SubpckgNo ?? string.Empty,
                 LineNo = line.SrvLineNo ?? string.Empty,
                 ShortText = line.SrvShortText ?? string.Empty,
-                Quantity = FormatDecimal(line.SrvQuantity, "0.###"),
+                Quantity = FormatQuantity(line.SrvQuantity),
                 BaseUom = line.SrvUom ?? string.Empty,
                 GrPrice = FormatDecimal(line.SrvGrPrice, "0.00"),
                 MatlGroup = line.SrvMatlGroup ?? string.Empty,
@@ -141,7 +167,7 @@ public sealed class ShkrProjectRequisitionService(
                 SernoLine = line.SrvaccSernoLine ?? string.Empty,
                 SerialNo = line.SerialNo ?? string.Empty,
                 Percentage = FormatDecimal(line.SrvaccPercentage, "0.###"),
-                Quantity = FormatDecimal(line.SrvaccQuantity, "0.###"),
+                Quantity = FormatQuantity(line.SrvaccQuantity),
             });
         }
 
@@ -152,6 +178,9 @@ public sealed class ShkrProjectRequisitionService(
 
     private static string FormatDecimal(decimal? value, string format) =>
         value?.ToString(format, CultureInfo.InvariantCulture) ?? string.Empty;
+
+    private static string FormatQuantity(decimal? value) =>
+        value is null ? string.Empty : decimal.Truncate(value.Value).ToString("0", CultureInfo.InvariantCulture);
 
     private async Task<ProjectRequisitionCreateResult> SendToSapAsync(
         CreateProjectRequisitionRequest request, CancellationToken cancellationToken)
@@ -175,15 +204,27 @@ public sealed class ShkrProjectRequisitionService(
             return new ProjectRequisitionCreateResult(false, null, sapErrorMessage);
         }
 
-        var envelope = await response.Content.ReadFromJsonAsync<ODataEnvelope<CreateProjectRequisitionResponseBody>>(cancellationToken)
-            ?? throw new InvalidOperationException("SAP Z_PR_CREATION_SRV returned an empty response body.");
-
-        if (string.IsNullOrWhiteSpace(envelope.D.Banfn))
+        ODataEnvelope<CreateProjectRequisitionResponseBody>? envelope;
+        try
         {
-            throw new InvalidOperationException("SAP Z_PR_CREATION_SRV returned 201 but no BANFN in the response body.");
+            envelope = await response.Content.ReadFromJsonAsync<ODataEnvelope<CreateProjectRequisitionResponseBody>>(cancellationToken);
+        }
+        catch (Exception ex)
+        {
+            throw new SapCreateReplyException("SAP Z_PR_CREATION_SRV answered with success but the response body could not be read.", ex);
         }
 
-        var confirmedLineItems = envelope.D.PrHeaderSet.Results.Select(r => r.PreqItem).ToList();
+        if (envelope is null)
+        {
+            throw new SapCreateReplyException("SAP Z_PR_CREATION_SRV returned an empty response body.");
+        }
+
+        if (string.IsNullOrWhiteSpace(envelope.D?.Banfn))
+        {
+            throw new SapCreateReplyException("SAP Z_PR_CREATION_SRV returned 201 but no BANFN in the response body.");
+        }
+
+        var confirmedLineItems = envelope.D.PrHeaderSet?.Results?.Select(r => r.PreqItem).ToList() ?? [];
 
         return new ProjectRequisitionCreateResult(true, envelope.D.Banfn, null, confirmedLineItems);
     }

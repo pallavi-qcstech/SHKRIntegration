@@ -48,6 +48,13 @@ Change Log
                        Service PRs are on Network + Activity only: a line on the WBS element path
                        (CostCodes.Notes, no WBS selected) stops the PR before SAP is called.
                        Project PR values kept in comments (Project PR:) until clarified.
+26/11/26 - Pallavi M - Quantity = line quantity (Estimate_PreBidDetails.Quantity) with the decimals cut off,
+                       the same on the item (PRHEADERSet), the service line (ZSRVSet) and SRVACCSet
+                       (was 1). A line with quantity blank or less than 1 stops the PR before SAP is called.
+                       C_AMT_BAPI stays EstimatedTotal.
+                       SerialNo (ACCOUNTSet and SRVACCSet) and SRVACCSet SernoLine = one number per GL account
+                       in the PR: 01 for the GL account of the first line, +1 for each next GL account.
+                       A blank GL account (Programs.SpecField6) stops the PR before SAP is called.
                      
 */
 
@@ -70,6 +77,8 @@ BEGIN
     DECLARE @blank_text_lines VARCHAR(MAX);   -- 19/11/26 lines without a description (SHORT_TEXT)
     DECLARE @no_price_lines VARCHAR(MAX);     -- 24/11/26 service lines without a unit cost (GR_PRICE)
     DECLARE @wbs_srv_lines VARCHAR(MAX);      -- 24/11/26 service lines on the WBS element path (not Network + Activity)
+    DECLARE @no_qty_lines VARCHAR(MAX);       -- 26/11/26 lines with quantity blank or less than 1
+    DECLARE @blank_gl_lines VARCHAR(MAX);     -- 26/11/26 lines without a GL account
     DECLARE @pr_doc_type NVARCHAR(200);
     DECLARE @bad_doc_type BIT;
     DECLARE @existing_pr NVARCHAR(100);
@@ -373,7 +382,7 @@ BEGIN
             pb.SpecField3,
             pgm.SpecField1,
             pgm.SpecField7,
-            1,   ---24/11/26 service PR: item QUANTITY 1.  ---24/11/26 Project PR: d.Quantity,
+            ROUND(d.Quantity, 0, 1),   ---26/11/26 item QUANTITY = line quantity, decimals cut off (was 1)
             LTRIM(RTRIM(LEFT(uom.UOM, CHARINDEX(' - ', uom.UOM + ' - ') - 1))),
             CONVERT(VARCHAR(10), pb.BidsDueDate, 104),
             CONVERT(VARCHAR(10), DATEADD(SECOND, CAST(pb.SpecField1 AS BIGINT) / 1000, '1970-01-01'), 104),
@@ -400,13 +409,13 @@ BEGIN
             CAST(ROW_NUMBER() OVER (ORDER BY d.LineNumber) * 2 AS VARCHAR(10)),       -- subpckg_no
             CAST(ROW_NUMBER() OVER (ORDER BY d.LineNumber) * 2 AS VARCHAR(10)),       -- srv_line_no
             LEFT(ISNULL(d.Description, ''), 40),                                      -- srv_short_text: same as the item text
-            1,                                                                        -- srv_quantity
+            ROUND(d.Quantity, 0, 1),                                                  -- srv_quantity: line quantity, decimals cut off (26/11/26)
             LTRIM(RTRIM(LEFT(uom.UOM, CHARINDEX(' - ', uom.UOM + ' - ') - 1))),       -- srv_uom: same as the item UNIT
             d.EstimatedUnitCost,                                                      -- srv_gr_price: price per unit
             pb.SpecField3,                                                            -- srv_matl_group: same as MAT_GRP
-            '01',                                                                     -- srvacc_serno_line
+            '01',                                                                     -- srvacc_serno_line: set per GL account below (26/11/26)
             100,                                                                      -- srvacc_percentage
-            1,                                                                        -- srvacc_quantity
+            ROUND(d.Quantity, 0, 1),                                                  -- srvacc_quantity: line quantity, decimals cut off (26/11/26)
             'N', 'I', GETDATE(), GETDATE()
         FROM dbo.Estimate_PreBids pb
         JOIN dbo.Projects proj ON proj.Id = pb.ProjectId
@@ -504,6 +513,23 @@ BEGIN
             SELECT @ERROR_DESC AS Message;
             RETURN -1;
         END
+
+        ---26/11/26 SerialNo (ACCOUNTSet and SRVACCSet) and SRVACCSet SernoLine: one number per GL account
+        ---in the PR, 01 for the GL account of the first line, +1 for each next different GL account.
+        ;WITH gl_first AS (
+            SELECT ISNULL(LTRIM(RTRIM(gl_acct)), '') AS gl_key, MIN(prebid_line_no) AS first_item
+            FROM dbo.xx_projectrequisition_line_stg_tbl_ob
+            WHERE hdr_record_id = @hdr_record_id
+            GROUP BY ISNULL(LTRIM(RTRIM(gl_acct)), '')
+        ), gl_serial AS (
+            SELECT gl_key, RIGHT('0' + CAST(ROW_NUMBER() OVER (ORDER BY first_item) AS VARCHAR(2)), 2) AS serial
+            FROM gl_first
+        )
+        UPDATE l
+        SET serial_no = s.serial, srvacc_serno_line = s.serial
+        FROM dbo.xx_projectrequisition_line_stg_tbl_ob l
+        JOIN gl_serial s ON s.gl_key = ISNULL(LTRIM(RTRIM(l.gl_acct)), '')
+        WHERE l.hdr_record_id = @hdr_record_id;
 
         END TRY
 
@@ -717,6 +743,110 @@ BEGIN
         BEGIN
             SET @ERROR_DESC = 'Unit cost is blank or 0 on line(s): ' + @no_price_lines
                 + '. Each service PR line needs a unit cost (sent to SAP as the service price).';
+
+            UPDATE dbo.xx_projectrequisition_hdr_stg_tbl_ob
+            SET process_status = 'E', error_msg = LEFT(@ERROR_DESC, 2000), last_update_date = GETDATE()
+            WHERE record_id = @hdr_record_id;
+
+            UPDATE dbo.xx_projectrequisition_line_stg_tbl_ob
+            SET process_status = 'E', error_msg = LEFT(@ERROR_DESC, 2000), last_update_date = GETDATE()
+            WHERE hdr_record_id = @hdr_record_id;
+
+            UPDATE dbo.xx_integration_tbl
+            SET status = 'E', error_msg = @ERROR_DESC, last_update_date = GETDATE()
+            WHERE record_id = @queue_record_id;
+
+            IF @DocumentId IS NOT NULL
+            BEGIN
+                EXEC dbo.Workflow_ExecuteDocumentAction
+                    @StepActionGUID = '00000000-0000-0000-0000-000000000000'
+                    ,@ActionTypeId = 3
+                    ,@DeliveredToStepId = @PrevStepId
+                    ,@DelegateToIds = N'0'
+                    ,@TeamInputIds = N'0'
+                    ,@DocumentId = @DocumentId
+                    ,@ActionComment = @ERROR_DESC
+                    ,@UserId = 5
+                    ,@TeamInputCanEditRecord = 0
+                    ,@TeamInputCanEditNotes = 0
+                    ,@TeamInputCanEditAttachments = 0
+                    ,@ActionSource = N'Website';
+
+                EXEC dbo.Workflow_CalculateCurrentPendingStepId @DocumentId = @DocumentId;
+                EXEC dbo.Workflow_UpdateDocumentCurrentPendingStepId @DocumentId = @DocumentId, @CurrentPendingStepId = @PrevStepId;
+                EXEC dbo.Workflow_RecalculateDueDate @DocumentId = @DocumentId;
+            END
+
+            SELECT @ERROR_DESC AS Message;
+            RETURN -1;
+        END
+
+        ----------Line quantity Validation---------  26/11/26
+
+        SET @no_qty_lines = STUFF((
+            SELECT ', ' + ISNULL(l.prebid_line_no, '?')
+            FROM dbo.xx_projectrequisition_line_stg_tbl_ob l
+            WHERE l.hdr_record_id = @hdr_record_id
+              AND ISNULL(l.quantity, 0) < 1
+            ORDER BY l.prebid_line_no
+            FOR XML PATH(''), TYPE).value('.', 'VARCHAR(MAX)'), 1, 2, '');
+
+        IF @no_qty_lines IS NOT NULL
+        BEGIN
+            SET @ERROR_DESC = 'Quantity is blank or less than 1 on line(s): ' + @no_qty_lines
+                + '. Each PR line needs a quantity of at least 1 (decimals are cut off before sending to SAP).';
+
+            UPDATE dbo.xx_projectrequisition_hdr_stg_tbl_ob
+            SET process_status = 'E', error_msg = LEFT(@ERROR_DESC, 2000), last_update_date = GETDATE()
+            WHERE record_id = @hdr_record_id;
+
+            UPDATE dbo.xx_projectrequisition_line_stg_tbl_ob
+            SET process_status = 'E', error_msg = LEFT(@ERROR_DESC, 2000), last_update_date = GETDATE()
+            WHERE hdr_record_id = @hdr_record_id;
+
+            UPDATE dbo.xx_integration_tbl
+            SET status = 'E', error_msg = @ERROR_DESC, last_update_date = GETDATE()
+            WHERE record_id = @queue_record_id;
+
+            IF @DocumentId IS NOT NULL
+            BEGIN
+                EXEC dbo.Workflow_ExecuteDocumentAction
+                    @StepActionGUID = '00000000-0000-0000-0000-000000000000'
+                    ,@ActionTypeId = 3
+                    ,@DeliveredToStepId = @PrevStepId
+                    ,@DelegateToIds = N'0'
+                    ,@TeamInputIds = N'0'
+                    ,@DocumentId = @DocumentId
+                    ,@ActionComment = @ERROR_DESC
+                    ,@UserId = 5
+                    ,@TeamInputCanEditRecord = 0
+                    ,@TeamInputCanEditNotes = 0
+                    ,@TeamInputCanEditAttachments = 0
+                    ,@ActionSource = N'Website';
+
+                EXEC dbo.Workflow_CalculateCurrentPendingStepId @DocumentId = @DocumentId;
+                EXEC dbo.Workflow_UpdateDocumentCurrentPendingStepId @DocumentId = @DocumentId, @CurrentPendingStepId = @PrevStepId;
+                EXEC dbo.Workflow_RecalculateDueDate @DocumentId = @DocumentId;
+            END
+
+            SELECT @ERROR_DESC AS Message;
+            RETURN -1;
+        END
+
+        ----------GL account Validation---------  26/11/26
+
+        SET @blank_gl_lines = STUFF((
+            SELECT ', ' + ISNULL(l.prebid_line_no, '?')
+            FROM dbo.xx_projectrequisition_line_stg_tbl_ob l
+            WHERE l.hdr_record_id = @hdr_record_id
+              AND ISNULL(LTRIM(RTRIM(l.gl_acct)), '') = ''
+            ORDER BY l.prebid_line_no
+            FOR XML PATH(''), TYPE).value('.', 'VARCHAR(MAX)'), 1, 2, '');
+
+        IF @blank_gl_lines IS NOT NULL
+        BEGIN
+            SET @ERROR_DESC = 'GL account is blank on line(s): ' + @blank_gl_lines
+                + '. The GL account is taken from the Program; please fill it there.';
 
             UPDATE dbo.xx_projectrequisition_hdr_stg_tbl_ob
             SET process_status = 'E', error_msg = LEFT(@ERROR_DESC, 2000), last_update_date = GETDATE()
