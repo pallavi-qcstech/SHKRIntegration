@@ -34,7 +34,6 @@ public sealed class PoItemSetItem
 public sealed class PoAccountSetItem
 {
     [JsonPropertyName("PoItem")] public string PoItem { get; set; } = string.Empty;
-    [JsonPropertyName("SerialNo")] public string SerialNo { get; set; } = string.Empty;
     [JsonPropertyName("GlAccount")] public string GlAccount { get; set; } = string.Empty;
 
     [JsonPropertyName("WbsElement")]

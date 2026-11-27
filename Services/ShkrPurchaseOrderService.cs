@@ -103,8 +103,6 @@ public sealed class ShkrPurchaseOrderService(
             DocDate = header.DocDate ?? string.Empty,
         };
 
-        var serialNoByGlAccount = SerialNoByGlAccount(lines);
-
         foreach (var line in lines)
         {
             var poItem = line.PoItem ?? string.Empty;
@@ -127,7 +125,6 @@ public sealed class ShkrPurchaseOrderService(
             request.PoAccountSet.Add(new PoAccountSetItem
             {
                 PoItem = poItem,
-                SerialNo = serialNoByGlAccount[GlKey(line)],
                 GlAccount = line.GlAccount ?? string.Empty,
                 WbsElement = NullIfBlank(line.WbsElement),
                 Network = NullIfBlank(line.Network),
@@ -150,23 +147,6 @@ public sealed class ShkrPurchaseOrderService(
 
     private static string FormatDecimal(decimal? value, string format) =>
         value?.ToString(format, CultureInfo.InvariantCulture) ?? string.Empty;
-
-    private static Dictionary<string, string> SerialNoByGlAccount(List<PurchaseOrderLine> lines)
-    {
-        var serials = new Dictionary<string, string>(StringComparer.Ordinal);
-        foreach (var line in lines.OrderBy(l => l.PoItem ?? string.Empty, StringComparer.Ordinal))
-        {
-            var gl = GlKey(line);
-            if (!serials.ContainsKey(gl))
-            {
-                serials[gl] = (serials.Count + 1).ToString("00", CultureInfo.InvariantCulture);
-            }
-        }
-
-        return serials;
-    }
-
-    private static string GlKey(PurchaseOrderLine line) => (line.GlAccount ?? string.Empty).Trim();
 
     private static string FormatQuantity(decimal? value) =>
         value is null ? string.Empty : decimal.Truncate(value.Value).ToString("0", CultureInfo.InvariantCulture);
