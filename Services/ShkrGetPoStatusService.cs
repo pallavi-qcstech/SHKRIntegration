@@ -33,28 +33,54 @@ public sealed class ShkrGetPoStatusService(
         ReadAsync(recordId, cancellationToken);
 
     protected override SapStatusRead Parse(int httpStatus, string body, string sapNumber) =>
-        ParsePoResponse(httpStatus, body);
+        ParsePoListResponse(httpStatus, body, sapNumber);
 
-    public static SapStatusRead ParsePoResponse(int httpStatus, string body)
+    public static SapStatusRead ParsePoListResponse(int httpStatus, string body, string sapNumber)
     {
-        if (httpStatus is >= 200 and < 300)
+        if (httpStatus is < 200 or >= 300)
         {
-            var entry = TryDeserialize<GetPoStatusEntry>(body);
-            return new SapStatusRead(httpStatus, entry?.PoType, entry?.Status, null, body);
+            return new SapStatusRead(httpStatus, null, null, ReadSapErrorValue(body), body);
         }
 
-        return new SapStatusRead(httpStatus, null, null, ReadSapErrorValue(body), body);
-    }
-
-    private static T? TryDeserialize<T>(string body) where T : class
-    {
+        List<GetPoStatusEntry>? entries = null;
         try
         {
-            return JsonSerializer.Deserialize<ODataEnvelope<T>>(body)?.D;
+            using var document = JsonDocument.Parse(body);
+            if (document.RootElement.ValueKind == JsonValueKind.Object &&
+                document.RootElement.TryGetProperty("d", out var d) &&
+                d.ValueKind == JsonValueKind.Object &&
+                d.TryGetProperty("results", out var results) &&
+                results.ValueKind == JsonValueKind.Array)
+            {
+                entries = results.Deserialize<List<GetPoStatusEntry>>();
+            }
         }
         catch (JsonException)
         {
-            return null;
+            entries = null;
         }
+
+        if (entries is null)
+        {
+            return new SapStatusRead(httpStatus, null, null, null, body,
+                $"SAP reply for PO {sapNumber} is not an OData result list; nothing was written.");
+        }
+
+        var matches = entries
+            .Where(e => NormalizeDocumentNumber(e.PurchaseOrder) == sapNumber)
+            .ToList();
+
+        if (matches.Count > 1)
+        {
+            return new SapStatusRead(httpStatus, null, null, null, body,
+                $"SAP returned {matches.Count} entries for PO {sapNumber}; nothing was written.");
+        }
+
+        if (matches.Count == 0)
+        {
+            return new SapStatusRead(httpStatus, null, null, null, body);
+        }
+
+        return new SapStatusRead(httpStatus, matches[0].PoType, matches[0].Status, null, body);
     }
 }

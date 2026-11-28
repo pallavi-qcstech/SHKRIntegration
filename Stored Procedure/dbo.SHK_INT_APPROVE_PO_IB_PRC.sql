@@ -48,6 +48,7 @@ DECLARE
 ,@URL NVARCHAR(500)
 ,@MSG VARCHAR(MAX)
 ,@BASE_URL NVARCHAR(200) = 'http://Shaker.pmweb.local:8080/SHKRIntegration/api/Inbound/postatus' ---26/11/26 host Shaker.pmweb.local (was localhost), the same as the PR/PO/CO outbound procedures
+,@last_action_id BIGINT ---28/11/26 last workflow action before the Reject, to check PMWeb recorded it
 
 SET @ERROR_DESC=''
 SET @ERROR_STATUS=0
@@ -114,15 +115,16 @@ BEGIN
         END
     ELSE IF @erp_approval_status = 'Rejected'
         BEGIN
-            UPDATE xx_integration_tbl
-            SET status = 'E', error_msg = @ERROR_DESC
-            WHERE record_id = @record_id
+            ---28/11/26 PO rejected in SAP = Reject the workflow (ActionTypeId 5), same as PR - no longer returned to the previous approver (ActionTypeId 3)
+            SET @last_action_id = ISNULL((SELECT MAX(a.Id)
+                                          FROM dbo.Workflow_DocumentStepActions a
+                                          INNER JOIN dbo.Workflow_DocumentSteps s ON s.Id = a.DocumentStepId
+                                          WHERE s.DocumentId = @DocumentId), 0)
 
-            --Return workflow to previous approver
             EXEC dbo.Workflow_ExecuteDocumentAction
                     @StepActionGUID = '00000000-0000-0000-0000-000000000000'
-                    ,@ActionTypeId = 3
-                    ,@DeliveredToStepId = @PrevStepId
+                    ,@ActionTypeId = 5
+                    ,@DeliveredToStepId = 0
                     ,@DelegateToIds = N'0'
                     ,@TeamInputIds = N'0'
                     ,@DocumentId = @DocumentId
@@ -133,9 +135,29 @@ BEGIN
                     ,@TeamInputCanEditAttachments = 0
                     ,@ActionSource = N'Website';
 
-            EXEC dbo.Workflow_CalculateCurrentPendingStepId @DocumentId=@DocumentId
-            EXEC dbo.Workflow_UpdateDocumentCurrentPendingStepId @DocumentId=@DocumentId,@CurrentPendingStepId=@PrevStepId
-            EXEC dbo.Workflow_RecalculateDueDate @DocumentId=@DocumentId
+            ---28/11/26 only when PMWeb recorded the Reject (it writes nothing if Reject is not allowed on the step for user 5)
+            IF EXISTS (SELECT 1
+                       FROM dbo.Workflow_DocumentStepActions a
+                       INNER JOIN dbo.Workflow_DocumentSteps s ON s.Id = a.DocumentStepId
+                       WHERE s.DocumentId = @DocumentId
+                       AND a.Id > @last_action_id
+                       AND a.ActionTypeId = 5)
+                BEGIN
+                    UPDATE xx_integration_tbl
+                    SET status = 'E', error_msg = 'PO Rejected'
+                    WHERE record_id = @record_id
+
+                    EXEC dbo.Workflow_CalculateCurrentPendingStepId @DocumentId=@DocumentId
+                    EXEC dbo.Workflow_UpdateDocumentCurrentPendingStepId @DocumentId=@DocumentId,@CurrentPendingStepId=0
+                    EXEC dbo.Workflow_UpdateWorkflowDocumentStatus @DocumentId=@DocumentId,@ActionTypeId=5,@StepId=@CurrStepId,@UserId=5,@ChangeLastAction=0
+                END
+            ELSE
+                BEGIN
+                    ---28/11/26 workflow not changed; row stays P
+                    UPDATE xx_integration_tbl
+                    SET error_msg = 'PO Rejected in SAP, but PMWeb did not record the Reject action (Reject not allowed on this step for user 5?). Workflow not changed.'
+                    WHERE record_id = @record_id
+                END
         END
 
 

@@ -61,7 +61,7 @@ public abstract class ShkrGetPrPoStatusServiceBase(
         var basePath = $"{servicePath.TrimEnd('/')}/{entitySet}";
         if (filterField is null)
         {
-            return $"{basePath}(%27{sapNumber}%27)?sap-client={sapClient}&$format=json&$filter%20eq%20%27{sapNumber}%27";
+            return $"{basePath}?sap-client={sapClient}&$format=json&$filter%20eq%20%27{sapNumber}%27";
         }
 
         var filter = Uri.EscapeDataString($"{filterField} eq '{sapNumber}'");
